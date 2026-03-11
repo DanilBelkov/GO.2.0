@@ -1,0 +1,6 @@
+@GO2.Api_HostAddress = http://localhost:5299
+
+GET {{GO2.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
