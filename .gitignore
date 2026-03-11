@@ -1,0 +1,28 @@
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Node
+**/node_modules/
+**/dist/
+**/.vite/
+
+# Dotnet
+**/bin/
+**/obj/
+.vs/
+
+# Local tools and temp
+.tmp_*/
+.tmp_nuxt_skill/
+.tools/
+.npm-cache/
+
+# Local env/runtime
+**/*.user
+**/*.suo
+**/*.pdb
+backend/src/GO2.Api/storage/
+
