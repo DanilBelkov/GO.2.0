@@ -28,12 +28,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasForeignKey(x => x.OwnerUserId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        modelBuilder.Entity<Map>()
-            .HasOne(x => x.ActiveVersion)
-            .WithMany()
-            .HasForeignKey(x => x.ActiveVersionId)
-            .OnDelete(DeleteBehavior.SetNull);
-
         modelBuilder.Entity<MapVersion>()
             .HasOne(x => x.Map)
             .WithMany(x => x.Versions)

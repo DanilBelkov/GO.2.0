@@ -55,9 +55,8 @@ public sealed class MapsController(
             Notes = "Initial upload"
         };
 
-        map.ActiveVersion = version;
+        map.Versions.Add(version);
         dbContext.Maps.Add(map);
-        dbContext.MapVersions.Add(version);
         await dbContext.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("Map uploaded {MapId} by {UserId}", map.Id, userId);
@@ -68,7 +67,7 @@ public sealed class MapsController(
             Name = map.Name,
             Status = map.Status,
             CreatedAtUtc = map.CreatedAtUtc,
-            ActiveVersionId = map.ActiveVersionId
+            ActiveVersionId = version.Id
         });
     }
 
@@ -105,7 +104,7 @@ public sealed class MapsController(
                 Name = x.Name,
                 Status = x.Status,
                 CreatedAtUtc = x.CreatedAtUtc,
-                ActiveVersionId = x.ActiveVersionId
+                ActiveVersionId = x.ActualVertion!.Id
             })
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -125,7 +124,7 @@ public sealed class MapsController(
         var versions = await dbContext.MapVersions
             .AsNoTracking()
             .Where(x => x.MapId == id)
-            .OrderByDescending(x => x.VersionNumber)
+            .OrderByDescending(x => x.CreatedAtUtc)
             .Select(x => new MapVersionResponse
             {
                 Id = x.Id,

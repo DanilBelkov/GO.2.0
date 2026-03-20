@@ -1,6 +1,6 @@
 import { clearAuth, getAccessToken, getRefreshToken, saveAuth } from './auth';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:5000';
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:5299';
 
 async function request<T>(url: string, init: RequestInit = {}, retry = true): Promise<T> {
   const headers = new Headers(init.headers ?? {});

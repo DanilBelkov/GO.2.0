@@ -3,24 +3,21 @@ using System;
 using GO2.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 #nullable disable
 
-namespace GO2.Api.Data.Migrations
+namespace GO2.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260311203604_InitialCreate")]
-    partial class InitialCreate
+    partial class AppDbContextModelSnapshot : ModelSnapshot
     {
-        /// <inheritdoc />
-        protected override void BuildTargetModel(ModelBuilder modelBuilder)
+        protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "9.0.3")
+                .HasAnnotation("ProductVersion", "10.0.5")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -29,9 +26,6 @@ namespace GO2.Api.Data.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid?>("ActiveVersionId")
                         .HasColumnType("uuid");
 
                     b.Property<DateTime>("CreatedAtUtc")
@@ -52,8 +46,6 @@ namespace GO2.Api.Data.Migrations
                         .HasColumnType("integer");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("ActiveVersionId");
 
                     b.HasIndex("OwnerUserId");
 
@@ -150,18 +142,11 @@ namespace GO2.Api.Data.Migrations
 
             modelBuilder.Entity("GO2.Api.Models.Map", b =>
                 {
-                    b.HasOne("GO2.Api.Models.MapVersion", "ActiveVersion")
-                        .WithMany()
-                        .HasForeignKey("ActiveVersionId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
                     b.HasOne("GO2.Api.Models.User", "OwnerUser")
                         .WithMany()
                         .HasForeignKey("OwnerUserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-
-                    b.Navigation("ActiveVersion");
 
                     b.Navigation("OwnerUser");
                 });

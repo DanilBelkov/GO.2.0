@@ -6,12 +6,13 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddOpenApi();
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("frontend", policy =>
@@ -99,6 +100,18 @@ app.UseExceptionHandler(exceptionApp =>
             return;
         }
 
+        if (exception is PostgresException postgresException)
+        {
+            var translated = PostgresErrorTranslator.Translate(postgresException);
+            context.Response.StatusCode = translated.StatusCode;
+            await Results.Problem(
+                title: translated.Title,
+                detail: translated.Detail,
+                statusCode: translated.StatusCode)
+                .ExecuteAsync(context);
+            return;
+        }
+
         context.Response.StatusCode = StatusCodes.Status500InternalServerError;
         await Results.Problem(
             title: "Unexpected server error",
@@ -110,8 +123,11 @@ app.UseExceptionHandler(exceptionApp =>
 
 if (app.Environment.IsDevelopment())
 {
-    app.UseSwagger();
-    app.UseSwaggerUI();
+    app.MapOpenApi();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/openapi/v1.json", "Api v1");
+    });
 }
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
