@@ -2,6 +2,7 @@ using GO2.Api.Models;
 
 namespace GO2.Api.Contracts;
 
+// Короткая карточка карты для списка.
 public class MapListItemResponse
 {
     public Guid Id { get; set; }
@@ -10,11 +11,13 @@ public class MapListItemResponse
     public DateTime CreatedAtUtc { get; set; }
 }
 
+// Детальная карточка карты (включая текущую активную версию).
 public sealed class MapDetailsResponse : MapListItemResponse
 {
     public Guid? ActiveVersionId { get; set; }
 }
 
+// Информация о версии карты.
 public sealed class MapVersionResponse
 {
     public Guid Id { get; set; }

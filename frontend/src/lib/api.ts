@@ -2,6 +2,7 @@ import { clearAuth, getAccessToken, getRefreshToken, saveAuth } from './auth';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:5299';
 
+// Базовый HTTP-клиент: добавляет access token, обрабатывает refresh и ошибки API.
 async function request<T>(url: string, init: RequestInit = {}, retry = true): Promise<T> {
   const headers = new Headers(init.headers ?? {});
   const token = getAccessToken();
@@ -20,8 +21,16 @@ async function request<T>(url: string, init: RequestInit = {}, retry = true): Pr
   }
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Request failed: ${response.status}`);
+    const rawText = await response.text();
+    let parsedMessage = '';
+    try {
+      const parsed = JSON.parse(rawText) as { title?: string; detail?: string };
+      parsedMessage = parsed.detail || parsed.title || '';
+    } catch {
+      parsedMessage = '';
+    }
+
+    throw new Error(parsedMessage || rawText || `Request failed: ${response.status}`);
   }
 
   if (response.status === 204) {
@@ -52,19 +61,81 @@ async function tryRefresh(): Promise<boolean> {
   return true;
 }
 
+// Контракты auth.
 export type AuthResponse = {
   accessToken: string;
   refreshToken: string;
   expiresAtUtc: string;
 };
 
+// Контракты карт.
+export type MapStatus = 'Uploaded' | 'Digitized' | 'Edited' | 'Ready';
+
 export type MapListItem = {
   id: string;
   name: string;
-  status: 'Uploaded' | 'Digitized' | 'Edited' | 'Ready';
+  status: MapStatus;
   createdAtUtc: string;
 };
 
+export type MapDetails = MapListItem & {
+  activeVersionId: string | null;
+};
+
+export type MapVersion = {
+  id: string;
+  versionNumber: number;
+  createdAtUtc: string;
+  notes: string;
+};
+
+// Контракты домена оцифровки/редактора.
+export type TerrainClass = 'Vegetation' | 'Water' | 'Rock' | 'Ground' | 'ManMade';
+export type TerrainGeometryKind = 'Point' | 'Line' | 'Polygon';
+export type TerrainObjectSource = 'Auto' | 'Manual';
+
+export type TerrainType = {
+  id: string;
+  name: string;
+  color: string;
+  icon: string;
+  traversability: number;
+  comment: string;
+  isSystem: boolean;
+};
+
+export type TerrainObject = {
+  id: string;
+  terrainClass: TerrainClass;
+  terrainObjectTypeId: string | null;
+  geometryKind: TerrainGeometryKind;
+  geometryJson: string;
+  traversability: number;
+  source: TerrainObjectSource;
+};
+
+export type TerrainObjectInput = {
+  id?: string;
+  terrainClass: TerrainClass;
+  terrainObjectTypeId: string | null;
+  geometryKind: TerrainGeometryKind;
+  geometryJson: string;
+  traversability: number;
+};
+
+export type DigitizationJob = {
+  jobId: string;
+  status: 'Queued' | 'Running' | 'Completed' | 'Failed';
+  progress: number;
+  error: string;
+  macroF1: number | null;
+  ioU: number | null;
+  mapVersionId: string;
+  startedAtUtc: string | null;
+  finishedAtUtc: string | null;
+};
+
+// Auth endpoints.
 export async function register(email: string, password: string): Promise<AuthResponse> {
   return request<AuthResponse>('/auth/register', {
     method: 'POST',
@@ -81,8 +152,17 @@ export async function login(email: string, password: string): Promise<AuthRespon
   });
 }
 
+// Maps endpoints.
 export async function getMaps(): Promise<MapListItem[]> {
   return request<MapListItem[]>('/maps');
+}
+
+export async function getMap(mapId: string): Promise<MapDetails> {
+  return request<MapDetails>(`/maps/${mapId}`);
+}
+
+export async function getMapVersions(mapId: string): Promise<MapVersion[]> {
+  return request<MapVersion[]>(`/maps/${mapId}/versions`);
 }
 
 export async function uploadMap(file: File): Promise<void> {
@@ -91,3 +171,84 @@ export async function uploadMap(file: File): Promise<void> {
   await request('/maps/upload', { method: 'POST', body });
 }
 
+// Загружает защищенное изображение карты и возвращает blob URL для <img>/<KonvaImage>.
+export async function getMapImageObjectUrl(mapId: string): Promise<string> {
+  const token = getAccessToken();
+  const headers = new Headers();
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  const response = await fetch(`${API_BASE}/maps/${mapId}/image`, { headers });
+  if (!response.ok) {
+    throw new Error('Failed to load map image');
+  }
+
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+}
+
+// Digitization endpoints.
+export async function startDigitization(mapId: string, versionId?: string): Promise<{ jobId: string; status: string }> {
+  return request(`/maps/${mapId}/digitize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ versionId }),
+  });
+}
+
+export async function getDigitizationStatus(mapId: string, jobId: string): Promise<DigitizationJob> {
+  return request<DigitizationJob>(`/maps/${mapId}/digitize/${jobId}`);
+}
+
+// Terrain objects endpoints.
+export async function getTerrainObjects(mapId: string, versionId?: string): Promise<TerrainObject[]> {
+  const query = versionId ? `?versionId=${encodeURIComponent(versionId)}` : '';
+  return request<TerrainObject[]>(`/maps/${mapId}/objects${query}`);
+}
+
+// Сохраняет текущее состояние редактора как новую версию карты.
+export async function saveTerrainObjects(
+  mapId: string,
+  objects: TerrainObjectInput[],
+  baseVersionId: string | null,
+  notes: string,
+): Promise<MapVersion> {
+  return request<MapVersion>(`/maps/${mapId}/objects`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      baseVersionId: baseVersionId ?? undefined,
+      notes,
+      objects,
+    }),
+  });
+}
+
+// Terrain types endpoints.
+export async function getTerrainTypes(): Promise<TerrainType[]> {
+  return request<TerrainType[]>('/terrain-types');
+}
+
+export async function createTerrainType(payload: Omit<TerrainType, 'id' | 'isSystem'>): Promise<TerrainType> {
+  return request<TerrainType>('/terrain-types', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateTerrainType(
+  id: string,
+  payload: Omit<TerrainType, 'id' | 'isSystem'>,
+): Promise<TerrainType> {
+  return request<TerrainType>(`/terrain-types/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteTerrainType(id: string): Promise<void> {
+  await request<void>(`/terrain-types/${id}`, { method: 'DELETE' });
+}

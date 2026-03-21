@@ -1,5 +1,6 @@
 namespace GO2.Api.Models;
 
+// Снимок состояния карты на конкретном шаге (после upload/digitize/manual edit).
 public sealed class MapVersion
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -9,5 +10,7 @@ public sealed class MapVersion
     public string WorkingFilePath { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    // Объекты местности, относящиеся именно к этой версии карты.
+    public List<TerrainObject> TerrainObjects { get; set; } = [];
 }
 

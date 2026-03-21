@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace GO2.Api.Controllers;
 
+// Контроллер аутентификации: регистрация, вход и обновление токенов.
 [ApiController]
 [Route("auth")]
 public sealed class AuthController(
@@ -18,6 +19,7 @@ public sealed class AuthController(
     [HttpPost("register")]
     public async Task<ActionResult<AuthResponse>> Register([FromBody] RegisterRequest request, CancellationToken cancellationToken)
     {
+        // Email нормализуем, чтобы исключить дубли из-за регистра.
         var email = request.Email.Trim().ToLowerInvariant();
         var exists = await dbContext.Users.AnyAsync(x => x.Email == email, cancellationToken);
         if (exists)
@@ -89,6 +91,7 @@ public sealed class AuthController(
 
     private async Task<AuthResponse> BuildTokensAsync(User user, CancellationToken cancellationToken)
     {
+        // Короткоживущий access + долгоживущий refresh.
         var accessExpires = DateTime.UtcNow.AddMinutes(30);
         var refreshValue = Convert.ToBase64String(Guid.NewGuid().ToByteArray()) + Convert.ToBase64String(Guid.NewGuid().ToByteArray());
 

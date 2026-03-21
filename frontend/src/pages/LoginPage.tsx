@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { login } from '../lib/api';
 import { saveAuth } from '../lib/auth';
 
+// Страница входа пользователя.
 export function LoginPage() {
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
@@ -13,6 +14,7 @@ export function LoginPage() {
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
+    // Отправляем credentials и сохраняем токены локально.
     setLoading(true);
     setError('');
     try {

@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
 
+// Точка входа SPA: подключаем роутер и корневой компонент приложения.
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>

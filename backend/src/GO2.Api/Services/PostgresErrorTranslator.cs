@@ -2,8 +2,10 @@ using Npgsql;
 
 namespace GO2.Api.Services;
 
+// Переводит низкоуровневые PostgreSQL ошибки в понятные API-ответы.
 public static class PostgresErrorTranslator
 {
+    // Возвращает HTTP-статус и человекочитаемое описание для ProblemDetails.
     public static (int StatusCode, string Title, string Detail) Translate(PostgresException exception)
     {
         return exception.SqlState switch

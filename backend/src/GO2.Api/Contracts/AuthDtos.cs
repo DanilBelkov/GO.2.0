@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 
 namespace GO2.Api.Contracts;
 
+// DTO регистрации пользователя.
 public sealed class RegisterRequest
 {
     [Required, EmailAddress]
@@ -11,6 +12,7 @@ public sealed class RegisterRequest
     public string Password { get; set; } = string.Empty;
 }
 
+// DTO входа пользователя.
 public sealed class LoginRequest
 {
     [Required, EmailAddress]
@@ -20,12 +22,14 @@ public sealed class LoginRequest
     public string Password { get; set; } = string.Empty;
 }
 
+// DTO обновления access token по refresh token.
 public sealed class RefreshRequest
 {
     [Required]
     public string RefreshToken { get; set; } = string.Empty;
 }
 
+// Унифицированный ответ auth-эндпоинтов.
 public sealed class AuthResponse
 {
     public string AccessToken { get; set; } = string.Empty;
