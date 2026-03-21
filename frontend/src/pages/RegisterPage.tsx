@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { register } from '../lib/api';
 import { saveAuth } from '../lib/auth';
 
+// Страница регистрации нового пользователя.
 export function RegisterPage() {
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
@@ -13,6 +14,7 @@ export function RegisterPage() {
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
+    // После регистрации сразу логиним пользователя через выданные токены.
     setLoading(true);
     setError('');
     try {

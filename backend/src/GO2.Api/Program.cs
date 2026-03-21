@@ -10,6 +10,7 @@ using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Базовая регистрация MVC + OpenAPI.
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
@@ -25,6 +26,7 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddProblemDetails(options =>
 {
+    // Дополняем стандартный ProblemDetails служебными id для диагностики.
     options.CustomizeProblemDetails = context =>
     {
         context.ProblemDetails.Extensions["traceId"] = context.HttpContext.TraceIdentifier;
@@ -37,6 +39,7 @@ builder.Services.AddProblemDetails(options =>
 
 builder.Services.Configure<ApiBehaviorOptions>(options =>
 {
+    // Единый формат ответа при ошибках валидации DTO.
     options.InvalidModelStateResponseFactory = context =>
     {
         var details = new ValidationProblemDetails(context.ModelState)
@@ -53,9 +56,12 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 
+// Регистрируем прикладные сервисы домена.
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
 builder.Services.AddScoped<IFileStorage, LocalFileStorage>();
+builder.Services.AddScoped<IDigitizationPipelineService, DigitizationPipelineService>();
+builder.Services.AddScoped<IDigitizationQualityService, DigitizationQualityService>();
 
 var jwtSection = builder.Configuration.GetSection("Jwt");
 var jwtKey = jwtSection["Key"] ?? throw new InvalidOperationException("JWT key is not configured.");
@@ -81,9 +87,17 @@ builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
+// На старте приложения гарантируем наличие системных типов местности.
+using (var scope = app.Services.CreateScope())
+{
+    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await TerrainTypeSeeder.SeedSystemTypesAsync(dbContext, CancellationToken.None);
+}
+
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseExceptionHandler(exceptionApp =>
 {
+    // Глобальный обработчик исключений с преобразованием в ProblemDetails.
     exceptionApp.Run(async context =>
     {
         var exception = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>()?.Error;

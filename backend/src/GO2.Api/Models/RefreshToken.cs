@@ -1,5 +1,6 @@
 namespace GO2.Api.Models;
 
+// Refresh token для ротации сессии без повторного логина.
 public sealed class RefreshToken
 {
     public Guid Id { get; set; } = Guid.NewGuid();

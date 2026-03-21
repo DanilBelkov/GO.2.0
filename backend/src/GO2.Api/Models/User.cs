@@ -1,5 +1,6 @@
 namespace GO2.Api.Models;
 
+// Аккаунт пользователя системы.
 public sealed class User
 {
     public Guid Id { get; set; } = Guid.NewGuid();

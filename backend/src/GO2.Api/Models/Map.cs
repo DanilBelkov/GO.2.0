@@ -1,5 +1,6 @@
 namespace GO2.Api.Models;
 
+// Бизнес-статус обработки карты.
 public enum MapStatus
 {
     Uploaded = 0,
@@ -8,6 +9,7 @@ public enum MapStatus
     Ready = 3
 }
 
+// Карта пользователя (оригинал + набор версий после правок/оцифровки).
 public sealed class Map
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -18,6 +20,7 @@ public sealed class Map
     public MapStatus Status { get; set; } = MapStatus.Uploaded;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public List<MapVersion> Versions { get; set; } = [];
-    public MapVersion? ActualVertion => Versions.OrderByDescending(x => x.CreatedAtUtc).FirstOrDefault();
+    // Упрощенный способ получить последнюю версию без отдельного поля ActiveVersionId.
+    public MapVersion? ActualVersion => Versions.OrderByDescending(x => x.VersionNumber).FirstOrDefault();
 }
 

@@ -5,6 +5,7 @@ import { MapsPage } from './pages/MapsPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { getAccessToken } from './lib/auth';
 
+// Обертка маршрутов, требующих авторизации.
 function ProtectedRoute({ children }: { children: ReactElement }) {
   const token = getAccessToken();
   if (!token) {
@@ -15,6 +16,7 @@ function ProtectedRoute({ children }: { children: ReactElement }) {
 }
 
 export default function App() {
+  // Корневая схема маршрутов приложения.
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/maps" replace />} />
