@@ -178,6 +178,26 @@ export type RouteJobStatus = {
   result: RouteResult | null;
 };
 
+export type RouteGraphNode = {
+  id: string;
+  x: number;
+  y: number;
+};
+
+export type RouteGraphEdge = {
+  fromNodeId: string;
+  toNodeId: string;
+  weight: number;
+};
+
+export type RouteGraph = {
+  nodes: RouteGraphNode[];
+  edges: RouteGraphEdge[];
+  gridWidth: number;
+  gridHeight: number;
+  summary: string;
+};
+
 // Auth endpoints.
 export async function register(email: string, password: string): Promise<AuthResponse> {
   return request<AuthResponse>('/auth/register', {
@@ -316,4 +336,19 @@ export async function calculateRoutes(
 
 export async function getRouteJobStatus(jobId: string): Promise<RouteJobStatus> {
   return request<RouteJobStatus>(`/routes/${jobId}/status`);
+}
+
+export async function getRouteGraph(
+  mapId: string,
+  mapVersionId?: string | null,
+  profile: RouteProfile = { timeWeight: 0.6, safetyWeight: 0.4 },
+): Promise<RouteGraph> {
+  const query = new URLSearchParams();
+  if (mapVersionId) {
+    query.set('mapVersionId', mapVersionId);
+  }
+
+  query.set('timeWeight', String(profile.timeWeight));
+  query.set('safetyWeight', String(profile.safetyWeight));
+  return request<RouteGraph>(`/routes/graph/${mapId}?${query.toString()}`);
 }

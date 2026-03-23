@@ -6,4 +6,10 @@ namespace GO2.Api.Application.Routes;
 public interface IRouteQueryService
 {
     RouteJobStatusResponse? GetStatus(Guid jobId);
+    Task<RouteGraphResponse?> BuildGraphAsync(
+        Guid userId,
+        Guid mapId,
+        Guid? mapVersionId,
+        RouteProfileDto profile,
+        CancellationToken cancellationToken);
 }

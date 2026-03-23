@@ -138,16 +138,40 @@ public sealed class MapCommandService(
         dbContext.MapVersions.Add(newVersion);
         await dbContext.SaveChangesAsync(cancellationToken);
 
-        var entities = request.Objects.Select(x => new TerrainObject
+        var requestedTypeIds = request.Objects
+            .Where(x => x.TerrainObjectTypeId.HasValue)
+            .Select(x => x.TerrainObjectTypeId!.Value)
+            .Distinct()
+            .ToList();
+
+        var typesById = requestedTypeIds.Count == 0
+            ? new Dictionary<Guid, TerrainObjectType>()
+            : await dbContext.TerrainObjectTypes
+                .Where(x => requestedTypeIds.Contains(x.Id) && (x.IsSystem || x.OwnerUserId == userId))
+                .ToDictionaryAsync(x => x.Id, cancellationToken);
+
+        if (requestedTypeIds.Any(id => !typesById.ContainsKey(id)))
         {
-            MapId = mapId,
-            MapVersionId = newVersion.Id,
-            TerrainClass = x.TerrainClass,
-            TerrainObjectTypeId = x.TerrainObjectTypeId,
-            GeometryKind = x.GeometryKind,
-            GeometryJson = x.GeometryJson,
-            Traversability = x.Traversability,
-            Source = TerrainObjectSource.Manual
+            throw new InvalidOperationException("TERRAIN_TYPE_NOT_FOUND");
+        }
+
+        var entities = request.Objects.Select(x =>
+        {
+            var resolvedType = x.TerrainObjectTypeId.HasValue
+                ? typesById[x.TerrainObjectTypeId.Value]
+                : null;
+
+            return new TerrainObject
+            {
+                MapId = mapId,
+                MapVersionId = newVersion.Id,
+                TerrainClass = x.TerrainClass,
+                TerrainObjectTypeId = resolvedType?.Id,
+                GeometryKind = x.GeometryKind,
+                GeometryJson = x.GeometryJson,
+                Traversability = resolvedType?.Traversability ?? x.Traversability,
+                Source = TerrainObjectSource.Manual
+            };
         }).ToList();
 
         dbContext.TerrainObjects.AddRange(entities);

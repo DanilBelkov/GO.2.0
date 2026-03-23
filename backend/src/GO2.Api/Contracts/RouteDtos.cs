@@ -14,6 +14,32 @@ public sealed class RouteProfileDto
     public double SafetyWeight { get; set; } = 0.4;
 }
 
+// Узел графа, построенного из оцифрованной карты.
+public sealed class RouteGraphNodeDto
+{
+    public string Id { get; set; } = string.Empty;
+    public double X { get; set; }
+    public double Y { get; set; }
+}
+
+// Ребро графа с весом для визуализации и отладки расчета.
+public sealed class RouteGraphEdgeDto
+{
+    public string FromNodeId { get; set; } = string.Empty;
+    public string ToNodeId { get; set; } = string.Empty;
+    public double Weight { get; set; }
+}
+
+// Payload графа карты для слоя "граф" в UI.
+public sealed class RouteGraphResponse
+{
+    public List<RouteGraphNodeDto> Nodes { get; set; } = [];
+    public List<RouteGraphEdgeDto> Edges { get; set; } = [];
+    public int GridWidth { get; set; }
+    public int GridHeight { get; set; }
+    public string Summary { get; set; } = string.Empty;
+}
+
 // Запрос запуска расчета маршрутов.
 public sealed class CalculateRoutesRequest
 {

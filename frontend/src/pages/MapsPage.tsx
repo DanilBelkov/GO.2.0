@@ -13,6 +13,7 @@ import {
   getMapImageObjectUrl,
   getMapVersions,
   getMaps,
+  getRouteGraph,
   getRouteJobStatus,
   getTerrainObjects,
   getTerrainTypes,
@@ -27,6 +28,7 @@ import type {
   MapListItem,
   MapVersion,
   RoutePoint,
+  RouteGraph,
   RouteVariant,
   TerrainClass,
   TerrainGeometryKind,
@@ -44,6 +46,12 @@ type EditorObject = {
   traversability: number;
   points: RoutePoint[];
   source: 'Auto' | 'Manual';
+};
+
+type GraphEdgeLine = {
+  from: RoutePoint;
+  to: RoutePoint;
+  weight: number;
 };
 
 type RouteRun = {
@@ -80,6 +88,7 @@ export function MapsPage() {
   const [draftPoints, setDraftPoints] = useState<RoutePoint[]>([]);
 
   const [terrainTypes, setTerrainTypes] = useState<TerrainType[]>([]);
+  const [graph, setGraph] = useState<RouteGraph | null>(null);
 
   const [routePoints, setRoutePoints] = useState<RoutePoint[]>([]);
   const [routeVariants, setRouteVariants] = useState<RouteVariant[]>([]);
@@ -92,6 +101,10 @@ export function MapsPage() {
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [newTypeName, setNewTypeName] = useState('');
+  const [newTypeColor, setNewTypeColor] = useState('#22c55e');
+  const [newTypeTraversability, setNewTypeTraversability] = useState(1);
+  const [newTypeComment, setNewTypeComment] = useState('');
 
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [scale, setScale] = useState(1);
@@ -110,6 +123,28 @@ export function MapsPage() {
     () => objects.find((x) => x.id === selectedObjectId) ?? null,
     [objects, selectedObjectId],
   );
+
+  const terrainTypeById = useMemo(
+    () => new Map(terrainTypes.map((type) => [type.id, type])),
+    [terrainTypes],
+  );
+
+  const graphNodeById = useMemo(
+    () => new Map((graph?.nodes ?? []).map((node) => [node.id, { x: node.x, y: node.y }])),
+    [graph],
+  );
+
+  const graphEdgeLines = useMemo<GraphEdgeLine[]>(() => {
+    if (!graph) return [];
+    return graph.edges
+      .map((edge) => {
+        const from = graphNodeById.get(edge.fromNodeId);
+        const to = graphNodeById.get(edge.toNodeId);
+        if (!from || !to) return null;
+        return { from, to, weight: edge.weight };
+      })
+      .filter((item): item is GraphEdgeLine => item !== null);
+  }, [graph, graphNodeById]);
 
   function parseObject(item: TerrainObject): EditorObject | null {
     try {
@@ -150,6 +185,43 @@ export function MapsPage() {
     setObjects(next);
   }
 
+  function resolveObjectColor(obj: EditorObject) {
+    if (obj.terrainObjectTypeId) {
+      const type = terrainTypeById.get(obj.terrainObjectTypeId);
+      if (type?.color) return type.color;
+    }
+
+    return OBJECT_COLORS[obj.terrainClass];
+  }
+
+  function snapPointToGraph(point: RoutePoint): RoutePoint {
+    if (!graph?.nodes.length) return point;
+
+    let best = graph.nodes[0];
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const node of graph.nodes) {
+      const dx = node.x - point.x;
+      const dy = node.y - point.y;
+      const distance = dx * dx + dy * dy;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = node;
+      }
+    }
+
+    return { x: best.x, y: best.y };
+  }
+
+  async function loadGraph(mapId: string, versionId: string | null) {
+    if (!versionId) {
+      setGraph(null);
+      return;
+    }
+
+    const routeGraph = await getRouteGraph(mapId, versionId, { timeWeight: 0.6, safetyWeight: 0.4 });
+    setGraph(routeGraph);
+  }
+
   async function loadMaps() {
     const list = await getMaps();
     setMaps(list);
@@ -172,6 +244,7 @@ export function MapsPage() {
     } else {
       setObjects([]);
     }
+    await loadGraph(mapId, versionId);
 
     const url = await getMapImageObjectUrl(mapId);
     const img = new window.Image();
@@ -196,11 +269,17 @@ export function MapsPage() {
 
   useEffect(() => {
     if (!selectedMapId || !selectedVersionId) return;
-    void getTerrainObjects(selectedMapId, selectedVersionId)
-      .then((terrain) => {
+    void Promise.all([
+      getTerrainObjects(selectedMapId, selectedVersionId),
+      getRouteGraph(selectedMapId, selectedVersionId, { timeWeight: 0.6, safetyWeight: 0.4 }),
+    ])
+      .then(([terrain, routeGraph]) => {
         setObjects(terrain.map(parseObject).filter((x): x is EditorObject => x !== null));
+        setGraph(routeGraph);
         setHistory([]);
         setRedo([]);
+        setRoutePoints([]);
+        setRouteVariants([]);
       })
       .catch((e: Error) => setError(e.message));
   }, [selectedVersionId]);
@@ -232,7 +311,20 @@ export function MapsPage() {
     if (!p) return;
 
     if (tool === 'route-point') {
-      setRoutePoints((prev) => [...prev, p]);
+      if (!graph?.nodes.length) {
+        setError('Граф не построен: сначала сохраните/оцифруйте объекты карты.');
+        return;
+      }
+
+      const snapped = snapPointToGraph(p);
+      setRoutePoints((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && Math.abs(last.x - snapped.x) < 0.0001 && Math.abs(last.y - snapped.y) < 0.0001) {
+          return prev;
+        }
+
+        return [...prev, snapped];
+      });
       return;
     }
 
@@ -347,26 +439,31 @@ export function MapsPage() {
     if (!selectedMapId || !selectedVersionId || routePoints.length < 2) return;
     setRouteStatus('in-progress');
     setRouteProgress(0);
-    const started = await calculateRoutes(selectedMapId, routePoints, { timeWeight: 0.6, safetyWeight: 0.4 }, selectedVersionId);
-    const timer = window.setInterval(async () => {
-      const status = await getRouteJobStatus(started.jobId);
-      setRouteStatus(status.status);
-      setRouteProgress(status.progress);
-      if (status.result?.routes) {
-        setRouteVariants(status.result.routes);
-      }
-
-      if (status.status === 'completed' || status.status === 'failed') {
-        window.clearInterval(timer);
+    try {
+      const started = await calculateRoutes(selectedMapId, routePoints, { timeWeight: 0.6, safetyWeight: 0.4 }, selectedVersionId);
+      const timer = window.setInterval(async () => {
+        const status = await getRouteJobStatus(started.jobId);
+        setRouteStatus(status.status);
+        setRouteProgress(status.progress);
         if (status.result?.routes) {
-          const routes = status.result.routes;
-          setRouteHistory((prev) => [
-            { id: crypto.randomUUID(), createdAt: new Date().toISOString(), points: routePoints, routes },
-            ...prev,
-          ]);
+          setRouteVariants(status.result.routes);
         }
-      }
-    }, 900);
+
+        if (status.status === 'completed' || status.status === 'failed') {
+          window.clearInterval(timer);
+          if (status.result?.routes) {
+            const routes = status.result.routes;
+            setRouteHistory((prev) => [
+              { id: crypto.randomUUID(), createdAt: new Date().toISOString(), points: routePoints, routes },
+              ...prev,
+            ]);
+          }
+        }
+      }, 900);
+    } catch (e) {
+      setRouteStatus('failed');
+      setError(e instanceof Error ? e.message : 'Ошибка маршрутизации');
+    }
   }
 
   function exportCurrentRoute() {
@@ -381,30 +478,64 @@ export function MapsPage() {
   }
 
   async function addTerrainType() {
+    const name = newTypeName.trim();
+    if (!name) {
+      setError('Введите название пользовательского типа');
+      return;
+    }
+
     try {
       const created = await createTerrainType({
-        name: `Тип ${new Date().toLocaleTimeString()}`,
-        color: '#d946ef',
+        name,
+        color: newTypeColor,
         icon: 'custom',
-        traversability: 1,
-        comment: 'Пользовательский тип',
+        traversability: newTypeTraversability,
+        comment: newTypeComment,
       });
       setTerrainTypes((prev) => [...prev, created]);
+      setNewTypeName('');
+      setNewTypeComment('');
+      setNewTypeTraversability(1);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка создания типа');
     }
   }
 
   async function renameTerrainType(type: TerrainType) {
+    const name = window.prompt('Новое название типа', type.name);
+    if (name === null) return;
+
+    const color = window.prompt('Цвет (#RRGGBB)', type.color);
+    if (color === null) return;
+
+    const traversabilityRaw = window.prompt('Проходимость (0.05-10)', String(type.traversability));
+    if (traversabilityRaw === null) return;
+
+    const traversability = Number(traversabilityRaw);
+    if (Number.isNaN(traversability) || traversability < 0.05 || traversability > 10) {
+      setError('Проходимость должна быть в диапазоне 0.05-10');
+      return;
+    }
+
+    const comment = window.prompt('Комментарий', type.comment);
+    if (comment === null) return;
+
     try {
       const updated = await updateTerrainType(type.id, {
-        name: `${type.name}*`,
-        color: type.color,
+        name: name.trim(),
+        color: color.trim(),
         icon: type.icon,
-        traversability: type.traversability,
-        comment: type.comment,
+        traversability,
+        comment,
       });
       setTerrainTypes((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+      setObjects((prev) =>
+        prev.map((obj) =>
+          obj.terrainObjectTypeId === updated.id
+            ? { ...obj, traversability: updated.traversability }
+            : obj,
+        ),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка обновления типа');
     }
@@ -414,6 +545,11 @@ export function MapsPage() {
     try {
       await deleteTerrainType(id);
       setTerrainTypes((prev) => prev.filter((x) => x.id !== id));
+      setObjects((prev) =>
+        prev.map((obj) =>
+          obj.terrainObjectTypeId === id ? { ...obj, terrainObjectTypeId: null } : obj,
+        ),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка удаления типа');
     }
@@ -494,7 +630,7 @@ export function MapsPage() {
               {layerDigitized && (
                 <Layer>
                   {objects.map((obj) => {
-                    const color = OBJECT_COLORS[obj.terrainClass];
+                    const color = resolveObjectColor(obj);
                     if (obj.geometryKind === 'Point') {
                       return (
                         <Circle
@@ -558,7 +694,29 @@ export function MapsPage() {
                   )}
                 </Layer>
               )}
-              {layerGraph && <Layer><Line points={[120, 140, 220, 180, 300, 160, 360, 230]} stroke="#a78bfa" dash={[6, 4]} /></Layer>}
+              {layerGraph && (
+                <Layer>
+                  {graphEdgeLines.map((edge, index) => (
+                    <Line
+                      key={`g-e-${index}`}
+                      points={[edge.from.x, edge.from.y, edge.to.x, edge.to.y]}
+                      stroke="#60a5fa"
+                      opacity={0.38}
+                      strokeWidth={1}
+                    />
+                  ))}
+                  {(graph?.nodes ?? []).map((node) => (
+                    <Circle
+                      key={node.id}
+                      x={node.x}
+                      y={node.y}
+                      radius={1.4}
+                      fill="#93c5fd"
+                      opacity={0.5}
+                    />
+                  ))}
+                </Layer>
+              )}
               {layerRoute && <Layer>
                 {routePoints.map((p, i) => <Circle key={`rp-${i}`} x={p.x} y={p.y} radius={6} fill="#f97316" />)}
                 {routeVariants.map((r, i) => <Line key={r.rank} points={r.polyline.flatMap((p) => [p.x, p.y])} stroke={['#f43f5e', '#f97316', '#22c55e'][i]} strokeWidth={selectedRoute?.rank === r.rank ? 5 : 3} opacity={selectedRoute?.rank === r.rank ? 1 : 0.6} />)}
@@ -577,7 +735,20 @@ export function MapsPage() {
                   </select>
                 </label>
                 <label>Тип
-                  <select value={selectedObject.terrainObjectTypeId ?? ''} onChange={(e) => updateObject(selectedObject.id, (x) => ({ ...x, terrainObjectTypeId: e.target.value || null }))}>
+                  <select
+                    value={selectedObject.terrainObjectTypeId ?? ''}
+                    onChange={(e) =>
+                      updateObject(selectedObject.id, (x) => {
+                        const typeId = e.target.value || null;
+                        const type = typeId ? terrainTypeById.get(typeId) : null;
+                        return {
+                          ...x,
+                          terrainObjectTypeId: typeId,
+                          traversability: type ? type.traversability : x.traversability,
+                        };
+                      })
+                    }
+                  >
                     <option value="">Не задан</option>
                     {terrainTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
@@ -591,10 +762,29 @@ export function MapsPage() {
 
             <h3>Типы местности</h3>
             <div className="side-group">
+              <label>Название
+                <input value={newTypeName} onChange={(e) => setNewTypeName(e.target.value)} placeholder="Например, Болото" />
+              </label>
+              <label>Цвет
+                <input type="color" value={newTypeColor} onChange={(e) => setNewTypeColor(e.target.value)} />
+              </label>
+              <label>Проходимость
+                <input
+                  type="number"
+                  min={0.05}
+                  max={10}
+                  step={0.05}
+                  value={newTypeTraversability}
+                  onChange={(e) => setNewTypeTraversability(Number(e.target.value))}
+                />
+              </label>
+              <label>Комментарий
+                <input value={newTypeComment} onChange={(e) => setNewTypeComment(e.target.value)} />
+              </label>
               <button onClick={addTerrainType}>Добавить тип</button>
               {terrainTypes.map((t) => (
                 <div key={t.id} className="types-actions">
-                  <span>{t.name}</span>
+                  <span style={{ color: t.color }}>{t.name}</span>
                   {!t.isSystem && <button onClick={() => renameTerrainType(t)}>Изм.</button>}
                   {!t.isSystem && <button onClick={() => removeTerrainType(t.id)}>Уд.</button>}
                 </div>
@@ -605,6 +795,9 @@ export function MapsPage() {
             <p>Точек: {routePoints.length}</p>
             <p>Статус: {routeStatus}</p>
             <p>Прогресс: {routeProgress}%</p>
+            <p>Узлов графа: {graph?.nodes.length ?? 0}</p>
+            <p>Ребер графа: {graph?.edges.length ?? 0}</p>
+            {graph?.summary && <p>{graph.summary}</p>}
             <h3>Top-3</h3>
             {routeVariants.map((r) => <button key={r.rank} onClick={() => setSelectedRouteRank(r.rank)}>#{r.rank}: {r.totalCost.toFixed(1)}</button>)}
             {selectedRoute && (

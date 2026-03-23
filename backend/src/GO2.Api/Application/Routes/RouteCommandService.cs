@@ -71,6 +71,7 @@ public sealed class RouteCommandService(
             var scopedDb = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var objects = await scopedDb.TerrainObjects
                 .AsNoTracking()
+                .Include(x => x.TerrainObjectType)
                 .Where(x => x.MapId == mapId && x.MapVersionId == versionId)
                 .ToListAsync();
 

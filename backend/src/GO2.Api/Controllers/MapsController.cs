@@ -1,4 +1,4 @@
-using GO2.Api.Application.Maps;
+﻿using GO2.Api.Application.Maps;
 using GO2.Api.Contracts;
 using GO2.Api.Extensions;
 using Microsoft.AspNetCore.Authorization;
@@ -110,6 +110,10 @@ public sealed class MapsController(IMapCommandService commandService, IMapQueryS
         catch (InvalidOperationException ex) when (ex.Message == "BASE_VERSION_NOT_FOUND")
         {
             return BadRequest(new ProblemDetails { Title = "Базовая версия карты не найдена." });
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "TERRAIN_TYPE_NOT_FOUND")
+        {
+            return BadRequest(new ProblemDetails { Title = "Выбранный тип местности недоступен." });
         }
     }
 }
