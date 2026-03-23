@@ -135,6 +135,49 @@ export type DigitizationJob = {
   finishedAtUtc: string | null;
 };
 
+// Контракты маршрутизации Wave 3.
+export type RoutePoint = {
+  x: number;
+  y: number;
+};
+
+export type RouteProfile = {
+  timeWeight: number;
+  safetyWeight: number;
+};
+
+export type RouteSegment = {
+  from: RoutePoint;
+  to: RoutePoint;
+  segmentCost: number;
+  segmentRisk: number;
+};
+
+export type RouteVariant = {
+  rank: number;
+  totalCost: number;
+  length: number;
+  estimatedTime: number;
+  riskScore: number;
+  penaltyScore: number;
+  polyline: RoutePoint[];
+  segments: RouteSegment[];
+  whyChosen: string[];
+};
+
+export type RouteResult = {
+  routes: RouteVariant[];
+  summary: string;
+};
+
+export type RouteJobStatus = {
+  jobId: string;
+  status: 'in-progress' | 'completed' | 'failed';
+  progress: number;
+  error: string;
+  result: RouteResult | null;
+};
+
 // Auth endpoints.
 export async function register(email: string, password: string): Promise<AuthResponse> {
   return request<AuthResponse>('/auth/register', {
@@ -181,7 +224,7 @@ export async function getMapImageObjectUrl(mapId: string): Promise<string> {
 
   const response = await fetch(`${API_BASE}/maps/${mapId}/image`, { headers });
   if (!response.ok) {
-    throw new Error('Failed to load map image');
+    throw new Error('Не удалось загрузить изображение карты');
   }
 
   const blob = await response.blob();
@@ -251,4 +294,26 @@ export async function updateTerrainType(
 
 export async function deleteTerrainType(id: string): Promise<void> {
   await request<void>(`/terrain-types/${id}`, { method: 'DELETE' });
+}
+
+// Route endpoints.
+export async function calculateRoutes(
+  mapId: string,
+  waypoints: RoutePoint[],
+  profile: RouteProfile,
+  mapVersionId?: string | null,
+): Promise<{ jobId: string; status: string }> {
+  return request(`/routes/calculate/${mapId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mapVersionId: mapVersionId ?? undefined,
+      waypoints,
+      profile,
+    }),
+  });
+}
+
+export async function getRouteJobStatus(jobId: string): Promise<RouteJobStatus> {
+  return request<RouteJobStatus>(`/routes/${jobId}/status`);
 }

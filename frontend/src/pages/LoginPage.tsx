@@ -22,7 +22,7 @@ export function LoginPage() {
       saveAuth(response.accessToken, response.refreshToken);
       navigate('/maps');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
+      setError(err instanceof Error ? err.message : 'Ошибка входа');
     } finally {
       setLoading(false);
     }
@@ -31,21 +31,21 @@ export function LoginPage() {
   return (
     <div className="page auth">
       <form className="panel" onSubmit={onSubmit}>
-        <h1>GO2 Login</h1>
+        <h1>GO2 Вход</h1>
         <label>
-          Email
+          Почта
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
         </label>
         <label>
-          Password
+          Пароль
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
         </label>
         {error && <p className="error">{error}</p>}
         <button type="submit" disabled={loading}>
-          {loading ? 'Signing in...' : 'Sign in'}
+          {loading ? 'Входим...' : 'Войти'}
         </button>
         <p className="hint">
-          No account? <Link to="/register">Create one</Link>
+          Нет аккаунта? <Link to="/register">Создать</Link>
         </p>
       </form>
     </div>

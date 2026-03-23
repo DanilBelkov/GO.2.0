@@ -1,4 +1,8 @@
 using System.Text;
+using GO2.Api.Application.Auth;
+using GO2.Api.Application.Maps;
+using GO2.Api.Application.Routes;
+using GO2.Api.Application.TerrainTypes;
 using GO2.Api.Data;
 using GO2.Api.Middleware;
 using GO2.Api.Services;
@@ -10,7 +14,6 @@ using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Базовая регистрация MVC + OpenAPI.
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
@@ -62,6 +65,15 @@ builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
 builder.Services.AddScoped<IFileStorage, LocalFileStorage>();
 builder.Services.AddScoped<IDigitizationPipelineService, DigitizationPipelineService>();
 builder.Services.AddScoped<IDigitizationQualityService, DigitizationQualityService>();
+builder.Services.AddScoped<IAuthCommandService, AuthCommandService>();
+builder.Services.AddScoped<IMapCommandService, MapCommandService>();
+builder.Services.AddScoped<IMapQueryService, MapQueryService>();
+builder.Services.AddScoped<ITerrainTypeCommandService, TerrainTypeCommandService>();
+builder.Services.AddScoped<ITerrainTypeQueryService, TerrainTypeQueryService>();
+builder.Services.AddSingleton<RouteJobStore>();
+builder.Services.AddSingleton<RoutingEngineService>();
+builder.Services.AddScoped<IRouteCommandService, RouteCommandService>();
+builder.Services.AddScoped<IRouteQueryService, RouteQueryService>();
 
 var jwtSection = builder.Configuration.GetSection("Jwt");
 var jwtKey = jwtSection["Key"] ?? throw new InvalidOperationException("JWT key is not configured.");

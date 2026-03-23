@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { Circle, Image as KonvaImage, Layer, Line, Stage } from 'react-konva';
 import type Konva from 'konva';
 import { useNavigate } from 'react-router-dom';
+import { clearAuth } from '../lib/auth';
 import {
+  calculateRoutes,
   createTerrainType,
   deleteTerrainType,
   getDigitizationStatus,
@@ -11,6 +13,7 @@ import {
   getMapImageObjectUrl,
   getMapVersions,
   getMaps,
+  getRouteJobStatus,
   getTerrainObjects,
   getTerrainTypes,
   saveTerrainObjects,
@@ -18,31 +21,37 @@ import {
   updateTerrainType,
   uploadMap,
 } from '../lib/api';
-import { clearAuth } from '../lib/auth';
 import type {
   DigitizationJob,
   MapDetails,
   MapListItem,
   MapVersion,
+  RoutePoint,
+  RouteVariant,
   TerrainClass,
   TerrainGeometryKind,
   TerrainObject,
   TerrainType,
 } from '../lib/api';
 
-type Point = { x: number; y: number };
+type ToolMode = 'select' | 'point' | 'line' | 'polygon' | 'route-point';
 
 type EditorObject = {
   id: string;
+  geometryKind: TerrainGeometryKind;
   terrainClass: TerrainClass;
   terrainObjectTypeId: string | null;
-  geometryKind: TerrainGeometryKind;
   traversability: number;
+  points: RoutePoint[];
   source: 'Auto' | 'Manual';
-  points: Point[];
 };
 
-type ToolMode = 'select' | 'point' | 'line' | 'polygon';
+type RouteRun = {
+  id: string;
+  createdAt: string;
+  points: RoutePoint[];
+  routes: RouteVariant[];
+};
 
 const CLASS_OPTIONS: TerrainClass[] = ['Vegetation', 'Water', 'Rock', 'Ground', 'ManMade'];
 const OBJECT_COLORS: Record<TerrainClass, string> = {
@@ -53,742 +62,578 @@ const OBJECT_COLORS: Record<TerrainClass, string> = {
   ManMade: '#FB7185',
 };
 
-// Преобразует DTO API в внутреннюю модель редактора.
-function parseObject(item: TerrainObject): EditorObject | null {
-  try {
-    const parsed = JSON.parse(item.geometryJson) as { x?: number; y?: number; points?: Point[] };
-    if (item.geometryKind === 'Point' && typeof parsed.x === 'number' && typeof parsed.y === 'number') {
-      return {
-        id: item.id,
-        terrainClass: item.terrainClass,
-        terrainObjectTypeId: item.terrainObjectTypeId,
-        geometryKind: item.geometryKind,
-        traversability: item.traversability,
-        source: item.source,
-        points: [{ x: parsed.x, y: parsed.y }],
-      };
-    }
-
-    if ((item.geometryKind === 'Line' || item.geometryKind === 'Polygon') && Array.isArray(parsed.points)) {
-      return {
-        id: item.id,
-        terrainClass: item.terrainClass,
-        terrainObjectTypeId: item.terrainObjectTypeId,
-        geometryKind: item.geometryKind,
-        traversability: item.traversability,
-        source: item.source,
-        points: parsed.points.map((p) => ({ x: p.x, y: p.y })),
-      };
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-}
-
-// Сериализует геометрию в формат, ожидаемый backend API.
-function serializeGeometry(kind: TerrainGeometryKind, points: Point[]): string {
-  if (kind === 'Point') {
-    const [point] = points;
-    return JSON.stringify({ x: point.x, y: point.y });
-  }
-
-  return JSON.stringify({ points });
-}
-
-// Главная рабочая страница: список карт + редактор оцифровки.
+// Полноценная рабочая страница: карты, редактор объектов, маршрутизация, история и экспорт UI.
 export function MapsPage() {
   const navigate = useNavigate();
-  // Блок данных списка карт.
-  const [maps, setMaps] = useState<MapListItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [uploading, setUploading] = useState(false);
 
-  // Блок выбранной карты и данных редактора.
+  const [maps, setMaps] = useState<MapListItem[]>([]);
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
   const [mapDetails, setMapDetails] = useState<MapDetails | null>(null);
   const [versions, setVersions] = useState<MapVersion[]>([]);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
-  const [terrainTypes, setTerrainTypes] = useState<TerrainType[]>([]);
+
   const [objects, setObjects] = useState<EditorObject[]>([]);
   const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
-
-  // Состояние инструментов редактора.
-  const [toolMode, setToolMode] = useState<ToolMode>('select');
-  const [draftPoints, setDraftPoints] = useState<Point[]>([]);
   const [history, setHistory] = useState<EditorObject[][]>([]);
-  const [redoHistory, setRedoHistory] = useState<EditorObject[][]>([]);
+  const [redo, setRedo] = useState<EditorObject[][]>([]);
+  const [tool, setTool] = useState<ToolMode>('select');
+  const [draftPoints, setDraftPoints] = useState<RoutePoint[]>([]);
+
+  const [terrainTypes, setTerrainTypes] = useState<TerrainType[]>([]);
+
+  const [routePoints, setRoutePoints] = useState<RoutePoint[]>([]);
+  const [routeVariants, setRouteVariants] = useState<RouteVariant[]>([]);
+  const [selectedRouteRank, setSelectedRouteRank] = useState(1);
+  const [routeProgress, setRouteProgress] = useState(0);
+  const [routeStatus, setRouteStatus] = useState<'idle' | 'in-progress' | 'completed' | 'failed'>('idle');
+  const [routeHistory, setRouteHistory] = useState<RouteRun[]>([]);
+
+  const [digitize, setDigitize] = useState<DigitizationJob | null>(null);
+  const [error, setError] = useState('');
+  const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [saveNote, setSaveNote] = useState('Manual edit');
 
-  // Состояние canvas (подложка, масштаб, панорамирование).
-  const [imageElement, setImageElement] = useState<HTMLImageElement | null>(null);
-  const [stageScale, setStageScale] = useState(1);
-  const [stagePosition, setStagePosition] = useState<Point>({ x: 0, y: 0 });
+  const [image, setImage] = useState<HTMLImageElement | null>(null);
+  const [scale, setScale] = useState(1);
+  const [stagePos, setStagePos] = useState<RoutePoint>({ x: 0, y: 0 });
+  const [layerSource, setLayerSource] = useState(true);
+  const [layerDigitized, setLayerDigitized] = useState(true);
+  const [layerGraph, setLayerGraph] = useState(false);
+  const [layerRoute, setLayerRoute] = useState(true);
 
-  // Layer switcher.
-  const [showSourceLayer, setShowSourceLayer] = useState(true);
-  const [showDigitizedLayer, setShowDigitizedLayer] = useState(true);
-  const [showGraphLayer, setShowGraphLayer] = useState(false);
-  const [showRouteLayer, setShowRouteLayer] = useState(false);
+  const selectedRoute = useMemo(
+    () => routeVariants.find((x) => x.rank === selectedRouteRank) ?? routeVariants[0] ?? null,
+    [routeVariants, selectedRouteRank],
+  );
 
-  // Состояние фоновой оцифровки и polling.
-  const [digitizeState, setDigitizeState] = useState<DigitizationJob | null>(null);
-  const [digitizing, setDigitizing] = useState(false);
+  const selectedObject = useMemo(
+    () => objects.find((x) => x.id === selectedObjectId) ?? null,
+    [objects, selectedObjectId],
+  );
 
-  const selectedObject = useMemo(() => objects.find((x) => x.id === selectedObjectId) ?? null, [objects, selectedObjectId]);
+  function parseObject(item: TerrainObject): EditorObject | null {
+    try {
+      const parsed = JSON.parse(item.geometryJson) as { x?: number; y?: number; points?: RoutePoint[] };
+      if (item.geometryKind === 'Point' && parsed.x !== undefined && parsed.y !== undefined) {
+        return {
+          id: item.id,
+          geometryKind: 'Point',
+          terrainClass: item.terrainClass,
+          terrainObjectTypeId: item.terrainObjectTypeId,
+          traversability: item.traversability,
+          points: [{ x: parsed.x, y: parsed.y }],
+          source: item.source,
+        };
+      }
+
+      if ((item.geometryKind === 'Line' || item.geometryKind === 'Polygon') && parsed.points?.length) {
+        return {
+          id: item.id,
+          geometryKind: item.geometryKind,
+          terrainClass: item.terrainClass,
+          terrainObjectTypeId: item.terrainObjectTypeId,
+          traversability: item.traversability,
+          points: parsed.points,
+          source: item.source,
+        };
+      }
+    } catch {
+      return null;
+    }
+
+    return null;
+  }
+
+  function pushHistory(next: EditorObject[]) {
+    setHistory((prev) => [...prev, objects]);
+    setRedo([]);
+    setObjects(next);
+  }
 
   async function loadMaps() {
-    setLoading(true);
-    setError('');
-    try {
-      const data = await getMaps();
-      setMaps(data);
-      if (!selectedMapId && data.length > 0) {
-        setSelectedMapId(data[0].id);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load maps');
-    } finally {
-      setLoading(false);
+    const list = await getMaps();
+    setMaps(list);
+    if (!selectedMapId && list[0]) {
+      setSelectedMapId(list[0].id);
     }
   }
 
-  async function loadEditorData(mapId: string, versionId?: string | null) {
-    setError('');
-    try {
-      // Загружаем параллельно все ключевые данные для редактора.
-      const [details, mapVersions, types] = await Promise.all([getMap(mapId), getMapVersions(mapId), getTerrainTypes()]);
-      setMapDetails(details);
-      setVersions(mapVersions);
-      setTerrainTypes(types);
+  async function loadMapData(mapId: string) {
+    const [details, mapVersions, types] = await Promise.all([getMap(mapId), getMapVersions(mapId), getTerrainTypes()]);
+    setMapDetails(details);
+    setVersions(mapVersions);
+    setTerrainTypes(types);
+    const versionId = details.activeVersionId ?? mapVersions[0]?.id ?? null;
+    setSelectedVersionId(versionId);
 
-      const targetVersionId = versionId ?? details.activeVersionId ?? mapVersions[0]?.id ?? null;
-      setSelectedVersionId(targetVersionId);
-
-      const terrainObjects = await getTerrainObjects(mapId, targetVersionId ?? undefined);
-      const parsedObjects = terrainObjects.map(parseObject).filter((x): x is EditorObject => x !== null);
-      setObjects(parsedObjects);
-      setHistory([]);
-      setRedoHistory([]);
-      setSelectedObjectId(null);
-
-      // Загружаем исходник карты для слоя "source".
-      const objectUrl = await getMapImageObjectUrl(mapId);
-      const image = new window.Image();
-      image.onload = () => setImageElement(image);
-      image.src = objectUrl;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load map editor');
+    if (versionId) {
+      const terrain = await getTerrainObjects(mapId, versionId);
+      setObjects(terrain.map(parseObject).filter((x): x is EditorObject => x !== null));
+    } else {
+      setObjects([]);
     }
+
+    const url = await getMapImageObjectUrl(mapId);
+    const img = new window.Image();
+    img.onload = () => setImage(img);
+    img.src = url;
+
+    setHistory([]);
+    setRedo([]);
+    setRoutePoints([]);
+    setRouteVariants([]);
+    setSelectedRouteRank(1);
   }
 
   useEffect(() => {
-    void loadMaps();
+    void loadMaps().catch((e: Error) => setError(e.message));
   }, []);
 
   useEffect(() => {
-    if (selectedMapId) {
-      void loadEditorData(selectedMapId);
-    }
+    if (!selectedMapId) return;
+    void loadMapData(selectedMapId).catch((e: Error) => setError(e.message));
   }, [selectedMapId]);
 
   useEffect(() => {
-    if (!selectedMapId || !selectedVersionId) {
-      return;
-    }
-
-    void (async () => {
-      try {
-        const terrainObjects = await getTerrainObjects(selectedMapId, selectedVersionId);
-        const parsedObjects = terrainObjects.map(parseObject).filter((x): x is EditorObject => x !== null);
-        setObjects(parsedObjects);
+    if (!selectedMapId || !selectedVersionId) return;
+    void getTerrainObjects(selectedMapId, selectedVersionId)
+      .then((terrain) => {
+        setObjects(terrain.map(parseObject).filter((x): x is EditorObject => x !== null));
         setHistory([]);
-        setRedoHistory([]);
-        setSelectedObjectId(null);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to switch map version');
-      }
-    })();
+        setRedo([]);
+      })
+      .catch((e: Error) => setError(e.message));
   }, [selectedVersionId]);
 
-  function onLogout() {
-    clearAuth();
-    navigate('/login');
-  }
-
-  async function onFileChange(event: ChangeEvent<HTMLInputElement>) {
+  async function onUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
+    if (!file) return;
     setUploading(true);
-    setError('');
     try {
       await uploadMap(file);
       await loadMaps();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Ошибка загрузки');
     } finally {
       setUploading(false);
       event.target.value = '';
     }
   }
 
-  function commitObjects(next: EditorObject[]) {
-    // Любое изменение складываем в undo-стек и очищаем redo.
-    setHistory((prev) => [...prev, objects]);
-    setRedoHistory([]);
-    setObjects(next);
-  }
-
-  function onUndo() {
-    if (history.length === 0) {
-      return;
-    }
-
-    const previous = history[history.length - 1];
-    setHistory((prev) => prev.slice(0, -1));
-    setRedoHistory((prev) => [...prev, objects]);
-    setObjects(previous);
-    setSelectedObjectId(null);
-  }
-
-  function onRedo() {
-    if (redoHistory.length === 0) {
-      return;
-    }
-
-    const next = redoHistory[redoHistory.length - 1];
-    setRedoHistory((prev) => prev.slice(0, -1));
-    setHistory((prev) => [...prev, objects]);
-    setObjects(next);
-    setSelectedObjectId(null);
-  }
-
-  function onStagePointerDown(event: Konva.KonvaEventObject<MouseEvent>) {
-    if (!showDigitizedLayer) {
-      return;
-    }
-
+  function canvasPointFromEvent(event: Konva.KonvaEventObject<MouseEvent>) {
     const stage = event.target.getStage();
     const pointer = stage?.getPointerPosition();
-    if (!pointer) {
-      return;
-    }
-
-    const x = (pointer.x - stagePosition.x) / stageScale;
-    const y = (pointer.y - stagePosition.y) / stageScale;
-
-    if (toolMode === 'select') {
-      if (event.target === stage) {
-        setSelectedObjectId(null);
-      }
-
-      return;
-    }
-
-    if (toolMode === 'point') {
-      // Для точки объект создается одним кликом.
-      const newObject: EditorObject = {
-        id: crypto.randomUUID(),
-        terrainClass: 'Ground',
-        terrainObjectTypeId: null,
-        geometryKind: 'Point',
-        traversability: 1,
-        source: 'Manual',
-        points: [{ x, y }],
-      };
-      commitObjects([...objects, newObject]);
-      setSelectedObjectId(newObject.id);
-      return;
-    }
-
-    // Для линии/полигона накапливаем черновые вершины.
-    setDraftPoints((prev) => [...prev, { x, y }]);
+    if (!pointer) return null;
+    return { x: (pointer.x - stagePos.x) / scale, y: (pointer.y - stagePos.y) / scale };
   }
 
-  function onFinishDraft() {
-    if (toolMode === 'line' && draftPoints.length < 2) {
+  function onStageClick(event: Konva.KonvaEventObject<MouseEvent>) {
+    const p = canvasPointFromEvent(event);
+    if (!p) return;
+
+    if (tool === 'route-point') {
+      setRoutePoints((prev) => [...prev, p]);
       return;
     }
 
-    if (toolMode === 'polygon' && draftPoints.length < 3) {
+    if (tool === 'point') {
+      pushHistory([
+        ...objects,
+        {
+          id: crypto.randomUUID(),
+          geometryKind: 'Point',
+          terrainClass: 'Ground',
+          terrainObjectTypeId: null,
+          traversability: 1,
+          points: [p],
+          source: 'Manual',
+        },
+      ]);
       return;
     }
 
-    if (toolMode === 'line' || toolMode === 'polygon') {
-      const newObject: EditorObject = {
+    if (tool === 'line' || tool === 'polygon') {
+      setDraftPoints((prev) => [...prev, p]);
+      return;
+    }
+
+    if (event.target === event.target.getStage()) {
+      setSelectedObjectId(null);
+    }
+  }
+
+  function finishDraftShape() {
+    if (tool === 'line' && draftPoints.length < 2) return;
+    if (tool === 'polygon' && draftPoints.length < 3) return;
+    if (tool !== 'line' && tool !== 'polygon') return;
+
+    pushHistory([
+      ...objects,
+      {
         id: crypto.randomUUID(),
+        geometryKind: tool === 'line' ? 'Line' : 'Polygon',
         terrainClass: 'Ground',
         terrainObjectTypeId: null,
-        geometryKind: toolMode === 'line' ? 'Line' : 'Polygon',
         traversability: 1,
-        source: 'Manual',
         points: draftPoints,
-      };
-      commitObjects([...objects, newObject]);
-      setSelectedObjectId(newObject.id);
-      setDraftPoints([]);
-    }
+        source: 'Manual',
+      },
+    ]);
+    setDraftPoints([]);
   }
 
-  function updateObject(id: string, updater: (current: EditorObject) => EditorObject) {
-    const next = objects.map((obj) => (obj.id === id ? updater(obj) : obj));
-    commitObjects(next);
+  function updateObject(id: string, updater: (x: EditorObject) => EditorObject) {
+    pushHistory(objects.map((obj) => (obj.id === id ? updater(obj) : obj)));
   }
 
-  function onDeleteObject() {
-    if (!selectedObjectId) {
-      return;
-    }
-
-    commitObjects(objects.filter((obj) => obj.id !== selectedObjectId));
-    setSelectedObjectId(null);
+  function undo() {
+    if (!history.length) return;
+    const prev = history[history.length - 1];
+    setHistory((h) => h.slice(0, -1));
+    setRedo((r) => [...r, objects]);
+    setObjects(prev);
   }
 
-  async function onSaveObjects() {
-    if (!selectedMapId || !selectedVersionId || objects.length === 0) {
-      return;
-    }
+  function redoAction() {
+    if (!redo.length) return;
+    const next = redo[redo.length - 1];
+    setRedo((r) => r.slice(0, -1));
+    setHistory((h) => [...h, objects]);
+    setObjects(next);
+  }
 
+  async function runDigitization() {
+    if (!selectedMapId || !selectedVersionId) return;
+    const start = await startDigitization(selectedMapId, selectedVersionId);
+    const timer = window.setInterval(async () => {
+      const status = await getDigitizationStatus(selectedMapId, start.jobId);
+      setDigitize(status);
+      if (status.status === 'Completed' || status.status === 'Failed') {
+        window.clearInterval(timer);
+        await loadMapData(selectedMapId);
+      }
+    }, 900);
+  }
+
+  async function saveVersion() {
+    if (!selectedMapId || !selectedVersionId) return;
     setSaving(true);
-    setError('');
     try {
-      // Сохраняем все объекты как новую версию карты.
       await saveTerrainObjects(
         selectedMapId,
-        objects.map((obj) => ({
-          id: obj.id,
-          terrainClass: obj.terrainClass,
-          terrainObjectTypeId: obj.terrainObjectTypeId,
-          geometryKind: obj.geometryKind,
-          geometryJson: serializeGeometry(obj.geometryKind, obj.points),
-          traversability: obj.traversability,
+        objects.map((x) => ({
+          id: x.id,
+          terrainClass: x.terrainClass,
+          terrainObjectTypeId: x.terrainObjectTypeId,
+          geometryKind: x.geometryKind,
+          geometryJson:
+            x.geometryKind === 'Point'
+              ? JSON.stringify({ x: x.points[0].x, y: x.points[0].y })
+              : JSON.stringify({ points: x.points }),
+          traversability: x.traversability,
         })),
         selectedVersionId,
-        saveNote,
+        'Правки через редактор',
       );
-
-      await loadEditorData(selectedMapId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save objects');
+      await loadMapData(selectedMapId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Ошибка сохранения версии');
     } finally {
       setSaving(false);
     }
   }
 
-  async function runDigitization() {
-    if (!selectedMapId || !selectedVersionId || digitizing) {
-      return;
-    }
+  async function runRouting() {
+    if (!selectedMapId || !selectedVersionId || routePoints.length < 2) return;
+    setRouteStatus('in-progress');
+    setRouteProgress(0);
+    const started = await calculateRoutes(selectedMapId, routePoints, { timeWeight: 0.6, safetyWeight: 0.4 }, selectedVersionId);
+    const timer = window.setInterval(async () => {
+      const status = await getRouteJobStatus(started.jobId);
+      setRouteStatus(status.status);
+      setRouteProgress(status.progress);
+      if (status.result?.routes) {
+        setRouteVariants(status.result.routes);
+      }
 
-    setDigitizing(true);
-    setError('');
-    setDigitizeState(null);
-
-    try {
-      // Стартуем job и опрашиваем статус до завершения.
-      const start = await startDigitization(selectedMapId, selectedVersionId);
-      const interval = window.setInterval(async () => {
-        try {
-          const status = await getDigitizationStatus(selectedMapId, start.jobId);
-          setDigitizeState(status);
-          if (status.status === 'Completed' || status.status === 'Failed') {
-            window.clearInterval(interval);
-            setDigitizing(false);
-            await loadEditorData(selectedMapId, status.mapVersionId);
-          }
-        } catch (err) {
-          window.clearInterval(interval);
-          setDigitizing(false);
-          setError(err instanceof Error ? err.message : 'Polling failed');
+      if (status.status === 'completed' || status.status === 'failed') {
+        window.clearInterval(timer);
+        if (status.result?.routes) {
+          const routes = status.result.routes;
+          setRouteHistory((prev) => [
+            { id: crypto.randomUUID(), createdAt: new Date().toISOString(), points: routePoints, routes },
+            ...prev,
+          ]);
         }
-      }, 1000);
-    } catch (err) {
-      setDigitizing(false);
-      setError(err instanceof Error ? err.message : 'Failed to start digitization');
-    }
+      }
+    }, 900);
   }
 
-  async function onCreateTerrainType() {
+  function exportCurrentRoute() {
+    if (!selectedRoute) return;
+    const blob = new Blob([JSON.stringify(selectedRoute, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `route-${selectedRoute.rank}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function addTerrainType() {
     try {
-      await createTerrainType({
-        name: `Custom ${new Date().toLocaleTimeString()}`,
-        color: '#D946EF',
+      const created = await createTerrainType({
+        name: `Тип ${new Date().toLocaleTimeString()}`,
+        color: '#d946ef',
         icon: 'custom',
         traversability: 1,
-        comment: 'User type',
+        comment: 'Пользовательский тип',
       });
-      const list = await getTerrainTypes();
-      setTerrainTypes(list);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create type');
+      setTerrainTypes((prev) => [...prev, created]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Ошибка создания типа');
     }
   }
 
-  async function onUpdateTerrainType(type: TerrainType) {
+  async function renameTerrainType(type: TerrainType) {
     try {
-      await updateTerrainType(type.id, {
+      const updated = await updateTerrainType(type.id, {
         name: `${type.name}*`,
         color: type.color,
         icon: type.icon,
         traversability: type.traversability,
         comment: type.comment,
       });
-      const list = await getTerrainTypes();
-      setTerrainTypes(list);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update type');
+      setTerrainTypes((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Ошибка обновления типа');
     }
   }
 
-  async function onDeleteTerrainType(id: string) {
+  async function removeTerrainType(id: string) {
     try {
       await deleteTerrainType(id);
-      const list = await getTerrainTypes();
-      setTerrainTypes(list);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete type');
+      setTerrainTypes((prev) => prev.filter((x) => x.id !== id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Ошибка удаления типа');
     }
   }
-
-  const draftLinePoints = draftPoints.flatMap((p) => [p.x, p.y]);
 
   return (
     <div className="page maps maps-wave2">
       <header className="topbar">
-        <h1>Maps</h1>
-        <button onClick={onLogout}>Logout</button>
+        <h1>Карты и маршруты</h1>
+        <button onClick={() => { clearAuth(); navigate('/login'); }}>Выйти</button>
       </header>
 
       <section className="panel">
         <label className="upload">
-          <span>{uploading ? 'Uploading...' : 'Upload PNG/JPEG'}</span>
-          <input type="file" accept="image/png,image/jpeg" onChange={onFileChange} disabled={uploading} />
+          <span>{uploading ? 'Загрузка...' : 'Загрузить карту PNG/JPEG'}</span>
+          <input type="file" accept="image/png,image/jpeg" onChange={onUpload} />
         </label>
       </section>
 
       <section className="panel">
-        <h2>Your maps</h2>
-        {loading && <p>Loading...</p>}
-        {!loading && maps.length === 0 && <p>Empty. Upload first map.</p>}
-        {!loading && maps.length > 0 && (
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Status</th>
-                <th>Created</th>
-              </tr>
-            </thead>
-            <tbody>
-              {maps.map((map) => (
-                <tr
-                  key={map.id}
-                  className={selectedMapId === map.id ? 'selected-row' : ''}
-                  onClick={() => setSelectedMapId(map.id)}
-                >
-                  <td>{map.name}</td>
-                  <td>{map.status}</td>
-                  <td>{new Date(map.createdAtUtc).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+        <h2>Список карт</h2>
+        <table><thead><tr><th>Название</th><th>Статус</th><th>Дата</th></tr></thead><tbody>
+          {maps.map((m) => (
+            <tr key={m.id} className={selectedMapId === m.id ? 'selected-row' : ''} onClick={() => setSelectedMapId(m.id)}>
+              <td>{m.name}</td><td>{m.status}</td><td>{new Date(m.createdAtUtc).toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody></table>
       </section>
 
-      {selectedMapId && (
-        <section className="panel editor-shell">
-          <div className="editor-toolbar">
-            <div className="toolbar-group">
-              <button onClick={runDigitization} disabled={digitizing}>
-                {digitizing ? 'Digitizing...' : 'Start digitization'}
-              </button>
-              <button onClick={onUndo} disabled={history.length === 0}>
-                Undo
-              </button>
-              <button onClick={onRedo} disabled={redoHistory.length === 0}>
-                Redo
-              </button>
-              <button onClick={onSaveObjects} disabled={saving || objects.length === 0}>
-                {saving ? 'Saving...' : 'Save as new version'}
-              </button>
+      <section className="panel editor-shell">
+        <div className="toolbar-group">
+          <button onClick={() => setTool('select')}>Выбор</button>
+          <button onClick={() => setTool('point')}>Точка</button>
+          <button onClick={() => setTool('line')}>Линия</button>
+          <button onClick={() => setTool('polygon')}>Полигон</button>
+          <button onClick={() => setTool('route-point')}>Точки маршрута</button>
+          <button onClick={finishDraftShape} disabled={draftPoints.length === 0}>Завершить фигуру</button>
+          <button onClick={() => setDraftPoints([])} disabled={draftPoints.length === 0}>Очистить черновик</button>
+          <button onClick={runDigitization}>Оцифровать</button>
+          <button onClick={saveVersion} disabled={saving}>{saving ? 'Сохраняем...' : 'Сохранить версию'}</button>
+          <button onClick={undo} disabled={!history.length}>Undo</button>
+          <button onClick={redoAction} disabled={!redo.length}>Redo</button>
+          <button onClick={runRouting} disabled={routePoints.length < 2}>Рассчитать top-3</button>
+          <button onClick={() => setRoutePoints([])}>Очистить точки</button>
+        </div>
+
+        <div className="toolbar-group">
+          <label>Версия
+            <select value={selectedVersionId ?? ''} onChange={(e) => setSelectedVersionId(e.target.value)}>
+              {versions.map((v) => <option key={v.id} value={v.id}>v{v.versionNumber} ({v.notes})</option>)}
+            </select>
+          </label>
+          <label><input type="checkbox" checked={layerSource} onChange={(e) => setLayerSource(e.target.checked)} /> исходник</label>
+          <label><input type="checkbox" checked={layerDigitized} onChange={(e) => setLayerDigitized(e.target.checked)} /> оцифровка</label>
+          <label><input type="checkbox" checked={layerGraph} onChange={(e) => setLayerGraph(e.target.checked)} /> граф</label>
+          <label><input type="checkbox" checked={layerRoute} onChange={(e) => setLayerRoute(e.target.checked)} /> маршрут</label>
+        </div>
+
+        <div className="editor-main">
+          <div className="canvas-panel">
+            <div className="layer-switcher">
+              <span>Масштаб: {Math.round(scale * 100)}%</span>
+              <button onClick={() => setScale((s) => Math.max(0.4, s - 0.1))}>-</button>
+              <button onClick={() => setScale((s) => Math.min(2.5, s + 0.1))}>+</button>
             </div>
-
-            <div className="toolbar-group">
-              <button className={toolMode === 'select' ? 'active' : ''} onClick={() => setToolMode('select')}>
-                Select
-              </button>
-              <button className={toolMode === 'point' ? 'active' : ''} onClick={() => setToolMode('point')}>
-                Point
-              </button>
-              <button className={toolMode === 'line' ? 'active' : ''} onClick={() => setToolMode('line')}>
-                Line
-              </button>
-              <button className={toolMode === 'polygon' ? 'active' : ''} onClick={() => setToolMode('polygon')}>
-                Polygon
-              </button>
-              <button onClick={onFinishDraft} disabled={draftPoints.length === 0}>
-                Finish shape
-              </button>
-              <button onClick={() => setDraftPoints([])} disabled={draftPoints.length === 0}>
-                Clear draft
-              </button>
-            </div>
-
-            <div className="toolbar-group">
-              <label>
-                Version
-                <select
-                  value={selectedVersionId ?? ''}
-                  onChange={(event) => setSelectedVersionId(event.target.value || null)}
-                >
-                  {versions.map((version) => (
-                    <option key={version.id} value={version.id}>
-                      v{version.versionNumber} ({version.notes})
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Save note
-                <input value={saveNote} onChange={(event) => setSaveNote(event.target.value)} />
-              </label>
-            </div>
-          </div>
-
-          <div className="editor-main">
-            <div className="canvas-panel">
-              <div className="layer-switcher">
-                <label>
-                  <input type="checkbox" checked={showSourceLayer} onChange={(e) => setShowSourceLayer(e.target.checked)} />
-                  source
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={showDigitizedLayer}
-                    onChange={(e) => setShowDigitizedLayer(e.target.checked)}
-                  />
-                  digitized
-                </label>
-                <label>
-                  <input type="checkbox" checked={showGraphLayer} onChange={(e) => setShowGraphLayer(e.target.checked)} />
-                  graph
-                </label>
-                <label>
-                  <input type="checkbox" checked={showRouteLayer} onChange={(e) => setShowRouteLayer(e.target.checked)} />
-                  route
-                </label>
-                <button onClick={() => setStageScale((s) => Math.max(0.5, s - 0.1))}>-</button>
-                <span>{Math.round(stageScale * 100)}%</span>
-                <button onClick={() => setStageScale((s) => Math.min(2.5, s + 0.1))}>+</button>
-              </div>
-
-              <Stage
-                width={900}
-                height={560}
-                scale={{ x: stageScale, y: stageScale }}
-                x={stagePosition.x}
-                y={stagePosition.y}
-                draggable
-                onDragEnd={(event) => setStagePosition({ x: event.target.x(), y: event.target.y() })}
-                onMouseDown={onStagePointerDown}
-              >
-                {showSourceLayer && (
-                  <Layer>
-                    {imageElement && <KonvaImage image={imageElement} width={900} height={560} opacity={0.85} />}
-                  </Layer>
-                )}
-
-                {/* Основной слой объектов оцифровки/ручного редактирования */}
-                {showDigitizedLayer && (
-                  <Layer>
-                    {objects.map((obj) => {
-                      const stroke = OBJECT_COLORS[obj.terrainClass];
-                      const isSelected = obj.id === selectedObjectId;
-                      if (obj.geometryKind === 'Point') {
-                        const [point] = obj.points;
-                        return (
-                          <Circle
-                            key={obj.id}
-                            x={point.x}
-                            y={point.y}
-                            radius={isSelected ? 8 : 6}
-                            fill={stroke}
-                            stroke={isSelected ? '#FFFFFF' : '#111827'}
-                            strokeWidth={2}
-                            draggable={isSelected}
-                            onClick={() => setSelectedObjectId(obj.id)}
-                            onDragEnd={(event) => {
-                              updateObject(obj.id, (current) => ({
-                                ...current,
-                                points: [{ x: event.target.x(), y: event.target.y() }],
-                              }));
-                            }}
-                          />
-                        );
-                      }
-
-                      const points = obj.points.flatMap((p) => [p.x, p.y]);
+            <Stage
+              width={900}
+              height={560}
+              x={stagePos.x}
+              y={stagePos.y}
+              scale={{ x: scale, y: scale }}
+              draggable
+              onDragEnd={(e) => setStagePos({ x: e.target.x(), y: e.target.y() })}
+              onMouseDown={onStageClick}
+            >
+              {layerSource && <Layer>{image && <KonvaImage image={image} width={900} height={560} opacity={0.9} />}</Layer>}
+              {layerDigitized && (
+                <Layer>
+                  {objects.map((obj) => {
+                    const color = OBJECT_COLORS[obj.terrainClass];
+                    if (obj.geometryKind === 'Point') {
                       return (
-                        <Line
+                        <Circle
                           key={obj.id}
-                          points={points}
-                          closed={obj.geometryKind === 'Polygon'}
-                          fill={obj.geometryKind === 'Polygon' ? `${stroke}55` : undefined}
-                          stroke={stroke}
-                          strokeWidth={isSelected ? 4 : 3}
-                          onClick={() => setSelectedObjectId(obj.id)}
+                          x={obj.points[0]?.x ?? 0}
+                          y={obj.points[0]?.y ?? 0}
+                          radius={obj.id === selectedObjectId ? 8 : 6}
+                          fill={color}
+                          draggable={obj.id === selectedObjectId}
+                          onClick={(e) => {
+                            e.cancelBubble = true;
+                            setSelectedObjectId(obj.id);
+                          }}
+                          onDragEnd={(e) =>
+                            updateObject(obj.id, (current) => ({
+                              ...current,
+                              points: [{ x: e.target.x(), y: e.target.y() }],
+                            }))
+                          }
                         />
                       );
-                    })}
+                    }
 
-                    {selectedObject &&
-                      selectedObject.geometryKind !== 'Point' &&
-                      selectedObject.points.map((point, index) => (
-                        <Circle
-                          key={`${selectedObject.id}-${index}`}
-                          x={point.x}
-                          y={point.y}
-                          radius={6}
-                          fill="#FFFFFF"
-                          stroke="#111827"
-                          strokeWidth={2}
-                          draggable
-                          onDragEnd={(event) => {
-                            updateObject(selectedObject.id, (current) => ({
-                              ...current,
-                              points: current.points.map((p, i) =>
-                                i === index ? { x: event.target.x(), y: event.target.y() } : p,
-                              ),
-                            }));
-                          }}
-                        />
-                      ))}
+                    return (
+                      <Line
+                        key={obj.id}
+                        points={obj.points.flatMap((p) => [p.x, p.y])}
+                        closed={obj.geometryKind === 'Polygon'}
+                        fill={obj.geometryKind === 'Polygon' ? `${color}44` : undefined}
+                        stroke={color}
+                        strokeWidth={obj.id === selectedObjectId ? 4 : 3}
+                        onClick={(e) => {
+                          e.cancelBubble = true;
+                          setSelectedObjectId(obj.id);
+                        }}
+                      />
+                    );
+                  })}
 
-                    {draftPoints.length > 0 && <Line points={draftLinePoints} stroke="#F97316" dash={[8, 6]} strokeWidth={2} />}
-                  </Layer>
-                )}
+                  {selectedObject?.geometryKind !== 'Point' &&
+                    selectedObject?.points.map((p, i) => (
+                      <Circle
+                        key={`${selectedObject.id}-v-${i}`}
+                        x={p.x}
+                        y={p.y}
+                        radius={5}
+                        fill="#fff"
+                        stroke="#111"
+                        draggable
+                        onDragEnd={(e) =>
+                          updateObject(selectedObject.id, (current) => ({
+                            ...current,
+                            points: current.points.map((pt, idx) => (idx === i ? { x: e.target.x(), y: e.target.y() } : pt)),
+                          }))
+                        }
+                      />
+                    ))}
 
-                {/* Временный плейсхолдер граф-слоя для переключателя Wave 2 */}
-                {showGraphLayer && (
-                  <Layer>
-                    <Line points={[100, 100, 180, 150, 240, 130, 300, 220]} stroke="#A78BFA" strokeWidth={2} dash={[5, 5]} />
-                  </Layer>
-                )}
+                  {draftPoints.length > 0 && (
+                    <Line points={draftPoints.flatMap((p) => [p.x, p.y])} stroke="#f97316" dash={[7, 6]} strokeWidth={2} />
+                  )}
+                </Layer>
+              )}
+              {layerGraph && <Layer><Line points={[120, 140, 220, 180, 300, 160, 360, 230]} stroke="#a78bfa" dash={[6, 4]} /></Layer>}
+              {layerRoute && <Layer>
+                {routePoints.map((p, i) => <Circle key={`rp-${i}`} x={p.x} y={p.y} radius={6} fill="#f97316" />)}
+                {routeVariants.map((r, i) => <Line key={r.rank} points={r.polyline.flatMap((p) => [p.x, p.y])} stroke={['#f43f5e', '#f97316', '#22c55e'][i]} strokeWidth={selectedRoute?.rank === r.rank ? 5 : 3} opacity={selectedRoute?.rank === r.rank ? 1 : 0.6} />)}
+              </Layer>}
+            </Stage>
+          </div>
 
-                {/* Временный плейсхолдер route-слоя для переключателя Wave 2 */}
-                {showRouteLayer && (
-                  <Layer>
-                    <Line points={[120, 440, 260, 320, 420, 290, 620, 180, 760, 120]} stroke="#F43F5E" strokeWidth={4} />
-                  </Layer>
-                )}
-              </Stage>
+          <aside className="side-panel">
+            <h3>Свойства объекта</h3>
+            {!selectedObject && <p>Объект не выбран</p>}
+            {selectedObject && (
+              <div className="side-group">
+                <label>Класс
+                  <select value={selectedObject.terrainClass} onChange={(e) => updateObject(selectedObject.id, (x) => ({ ...x, terrainClass: e.target.value as TerrainClass }))}>
+                    {CLASS_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </label>
+                <label>Тип
+                  <select value={selectedObject.terrainObjectTypeId ?? ''} onChange={(e) => updateObject(selectedObject.id, (x) => ({ ...x, terrainObjectTypeId: e.target.value || null }))}>
+                    <option value="">Не задан</option>
+                    {terrainTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </label>
+                <label>Проходимость
+                  <input type="number" min={0.05} max={10} step={0.05} value={selectedObject.traversability} onChange={(e) => updateObject(selectedObject.id, (x) => ({ ...x, traversability: Number(e.target.value) }))} />
+                </label>
+                <button onClick={() => pushHistory(objects.filter((x) => x.id !== selectedObject.id))}>Удалить объект</button>
+              </div>
+            )}
+
+            <h3>Типы местности</h3>
+            <div className="side-group">
+              <button onClick={addTerrainType}>Добавить тип</button>
+              {terrainTypes.map((t) => (
+                <div key={t.id} className="types-actions">
+                  <span>{t.name}</span>
+                  {!t.isSystem && <button onClick={() => renameTerrainType(t)}>Изм.</button>}
+                  {!t.isSystem && <button onClick={() => removeTerrainType(t.id)}>Уд.</button>}
+                </div>
+              ))}
             </div>
 
-            <aside className="side-panel">
-              <h3>Selected object</h3>
-              {!selectedObject && <p>No object selected</p>}
-              {selectedObject && (
-                <div className="side-group">
-                  <label>
-                    Class
-                    <select
-                      value={selectedObject.terrainClass}
-                      onChange={(event) =>
-                        updateObject(selectedObject.id, (current) => ({
-                          ...current,
-                          terrainClass: event.target.value as TerrainClass,
-                        }))
-                      }
-                    >
-                      {CLASS_OPTIONS.map((item) => (
-                        <option key={item} value={item}>
-                          {item}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Terrain type
-                    <select
-                      value={selectedObject.terrainObjectTypeId ?? ''}
-                      onChange={(event) =>
-                        updateObject(selectedObject.id, (current) => ({
-                          ...current,
-                          terrainObjectTypeId: event.target.value || null,
-                        }))
-                      }
-                    >
-                      <option value="">None</option>
-                      {terrainTypes.map((type) => (
-                        <option key={type.id} value={type.id}>
-                          {type.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Traversability
-                    <input
-                      type="number"
-                      min={0.05}
-                      max={10}
-                      step={0.05}
-                      value={selectedObject.traversability}
-                      onChange={(event) =>
-                        updateObject(selectedObject.id, (current) => ({
-                          ...current,
-                          traversability: Number(event.target.value),
-                        }))
-                      }
-                    />
-                  </label>
-                  <button onClick={onDeleteObject}>Delete object</button>
-                </div>
-              )}
-
-              <h3>Terrain types</h3>
+            <h3>Маршрутизация</h3>
+            <p>Точек: {routePoints.length}</p>
+            <p>Статус: {routeStatus}</p>
+            <p>Прогресс: {routeProgress}%</p>
+            <h3>Top-3</h3>
+            {routeVariants.map((r) => <button key={r.rank} onClick={() => setSelectedRouteRank(r.rank)}>#{r.rank}: {r.totalCost.toFixed(1)}</button>)}
+            {selectedRoute && (
               <div className="side-group">
-                <button onClick={onCreateTerrainType}>Add custom type</button>
-                <ul className="types-list">
-                  {terrainTypes.map((type) => (
-                    <li key={type.id}>
-                      <span style={{ color: type.color }}>{type.name}</span>
-                      {!type.isSystem && (
-                        <span className="types-actions">
-                          <button onClick={() => onUpdateTerrainType(type)}>Edit</button>
-                          <button onClick={() => onDeleteTerrainType(type.id)}>Delete</button>
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
+                <p>Длина: {selectedRoute.length.toFixed(1)} м</p>
+                <p>Время: {selectedRoute.estimatedTime.toFixed(1)} сек</p>
+                <p>Штраф: {selectedRoute.penaltyScore.toFixed(2)}</p>
+                <h3>Почему этот маршрут</h3>
+                {selectedRoute.whyChosen.map((w, i) => <p key={i}>{w}</p>)}
+                <h3>Легенда риска</h3>
+                <p>Низкий: &lt;0.4 | Средний: 0.4-0.75 | Высокий: &gt;0.75</p>
+                <button onClick={exportCurrentRoute}>Экспорт текущего маршрута</button>
               </div>
+            )}
 
-              <h3>Digitization status</h3>
-              {!digitizeState && <p>Not started</p>}
-              {digitizeState && (
-                <div className="side-group">
-                  <p>Status: {digitizeState.status}</p>
-                  <p>Progress: {digitizeState.progress}%</p>
-                  <p>Macro F1: {digitizeState.macroF1 ?? '-'}</p>
-                  <p>IoU: {digitizeState.ioU ?? '-'}</p>
-                  {digitizeState.error && <p className="error">{digitizeState.error}</p>}
-                </div>
-              )}
-            </aside>
-          </div>
-        </section>
-      )}
+            <h3>История запусков</h3>
+            {routeHistory.length === 0 && <p>Пока пусто</p>}
+            {routeHistory.map((run) => (
+              <button key={run.id} onClick={() => { setRoutePoints(run.points); setRouteVariants(run.routes); setSelectedRouteRank(1); }}>
+                {new Date(run.createdAt).toLocaleString()}
+              </button>
+            ))}
 
-      {mapDetails && <p className="hint">Active map: {mapDetails.name}</p>}
+            {digitize && <p>Оцифровка: {digitize.status} ({digitize.progress}%)</p>}
+          </aside>
+        </div>
+      </section>
+
+      {mapDetails && <p className="hint">Активная карта: {mapDetails.name}</p>}
       {error && <p className="error">{error}</p>}
     </div>
   );

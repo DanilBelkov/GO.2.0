@@ -22,7 +22,7 @@ export function RegisterPage() {
       saveAuth(response.accessToken, response.refreshToken);
       navigate('/maps');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Registration failed');
+      setError(err instanceof Error ? err.message : 'Ошибка регистрации');
     } finally {
       setLoading(false);
     }
@@ -31,21 +31,21 @@ export function RegisterPage() {
   return (
     <div className="page auth">
       <form className="panel" onSubmit={onSubmit}>
-        <h1>Create Account</h1>
+        <h1>Регистрация</h1>
         <label>
-          Email
+          Почта
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
         </label>
         <label>
-          Password
+          Пароль
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} />
         </label>
         {error && <p className="error">{error}</p>}
         <button type="submit" disabled={loading}>
-          {loading ? 'Creating...' : 'Create account'}
+          {loading ? 'Создаем...' : 'Создать аккаунт'}
         </button>
         <p className="hint">
-          Have account? <Link to="/login">Sign in</Link>
+          Уже есть аккаунт? <Link to="/login">Войти</Link>
         </p>
       </form>
     </div>
