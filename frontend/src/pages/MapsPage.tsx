@@ -21,6 +21,7 @@ import {
   startDigitization,
   updateTerrainType,
   uploadMap,
+  uploadOcdMap,
 } from '../lib/api';
 import type {
   DigitizationJob,
@@ -61,6 +62,10 @@ type RouteRun = {
   routes: RouteVariant[];
 };
 
+const CANVAS_WIDTH = 900;
+const CANVAS_HEIGHT = 560;
+const FIT_PADDING = 24;
+
 const CLASS_OPTIONS: TerrainClass[] = ['Vegetation', 'Water', 'Rock', 'Ground', 'ManMade'];
 const OBJECT_COLORS: Record<TerrainClass, string> = {
   Vegetation: '#34D399',
@@ -100,6 +105,7 @@ export function MapsPage() {
   const [digitize, setDigitize] = useState<DigitizationJob | null>(null);
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [uploadingOcd, setUploadingOcd] = useState(false);
   const [saving, setSaving] = useState(false);
   const [newTypeName, setNewTypeName] = useState('');
   const [newTypeColor, setNewTypeColor] = useState('#22c55e');
@@ -194,6 +200,42 @@ export function MapsPage() {
     return OBJECT_COLORS[obj.terrainClass];
   }
 
+  function fitViewportToObjects(items: EditorObject[]) {
+    if (items.length === 0) {
+      setScale(1);
+      setStagePos({ x: 0, y: 0 });
+      return;
+    }
+
+    const allPoints = items.flatMap((x) => x.points);
+    if (allPoints.length === 0) {
+      return;
+    }
+
+    let minX = allPoints[0].x;
+    let minY = allPoints[0].y;
+    let maxX = allPoints[0].x;
+    let maxY = allPoints[0].y;
+    for (const p of allPoints) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+
+    const boundsWidth = Math.max(1, maxX - minX);
+    const boundsHeight = Math.max(1, maxY - minY);
+    const fitScaleX = (CANVAS_WIDTH - FIT_PADDING * 2) / boundsWidth;
+    const fitScaleY = (CANVAS_HEIGHT - FIT_PADDING * 2) / boundsHeight;
+    const nextScale = Math.max(0.08, Math.min(2.5, Math.min(fitScaleX, fitScaleY)));
+
+    const offsetX = (CANVAS_WIDTH - boundsWidth * nextScale) / 2 - minX * nextScale;
+    const offsetY = (CANVAS_HEIGHT - boundsHeight * nextScale) / 2 - minY * nextScale;
+
+    setScale(nextScale);
+    setStagePos({ x: offsetX, y: offsetY });
+  }
+
   function snapPointToGraph(point: RoutePoint): RoutePoint {
     if (!graph?.nodes.length) return point;
 
@@ -240,15 +282,20 @@ export function MapsPage() {
 
     if (versionId) {
       const terrain = await getTerrainObjects(mapId, versionId);
-      setObjects(terrain.map(parseObject).filter((x): x is EditorObject => x !== null));
+      const parsed = terrain.map(parseObject).filter((x): x is EditorObject => x !== null);
+      setObjects(parsed);
+      fitViewportToObjects(parsed);
     } else {
       setObjects([]);
+      fitViewportToObjects([]);
     }
     await loadGraph(mapId, versionId);
 
+    setImage(null);
     const url = await getMapImageObjectUrl(mapId);
     const img = new window.Image();
     img.onload = () => setImage(img);
+    img.onerror = () => setImage(null);
     img.src = url;
 
     setHistory([]);
@@ -274,7 +321,9 @@ export function MapsPage() {
       getRouteGraph(selectedMapId, selectedVersionId, { timeWeight: 0.6, safetyWeight: 0.4 }),
     ])
       .then(([terrain, routeGraph]) => {
-        setObjects(terrain.map(parseObject).filter((x): x is EditorObject => x !== null));
+        const parsed = terrain.map(parseObject).filter((x): x is EditorObject => x !== null);
+        setObjects(parsed);
+        fitViewportToObjects(parsed);
         setGraph(routeGraph);
         setHistory([]);
         setRedo([]);
@@ -295,6 +344,21 @@ export function MapsPage() {
       setError(e instanceof Error ? e.message : 'Ошибка загрузки');
     } finally {
       setUploading(false);
+      event.target.value = '';
+    }
+  }
+
+  async function onUploadOcd(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setUploadingOcd(true);
+    try {
+      await uploadOcdMap(file);
+      await loadMaps();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Ошибка загрузки OCAD');
+    } finally {
+      setUploadingOcd(false);
       event.target.value = '';
     }
   }
@@ -567,6 +631,10 @@ export function MapsPage() {
           <span>{uploading ? 'Загрузка...' : 'Загрузить карту PNG/JPEG'}</span>
           <input type="file" accept="image/png,image/jpeg" onChange={onUpload} />
         </label>
+        <label className="upload">
+          <span>{uploadingOcd ? 'Импорт OCAD...' : 'Импорт карты OCAD (.ocd)'}</span>
+          <input type="file" accept=".ocd,application/octet-stream" onChange={onUploadOcd} />
+        </label>
       </section>
 
       <section className="panel">
@@ -617,8 +685,8 @@ export function MapsPage() {
               <button onClick={() => setScale((s) => Math.min(2.5, s + 0.1))}>+</button>
             </div>
             <Stage
-              width={900}
-              height={560}
+              width={CANVAS_WIDTH}
+              height={CANVAS_HEIGHT}
               x={stagePos.x}
               y={stagePos.y}
               scale={{ x: scale, y: scale }}
@@ -626,7 +694,7 @@ export function MapsPage() {
               onDragEnd={(e) => setStagePos({ x: e.target.x(), y: e.target.y() })}
               onMouseDown={onStageClick}
             >
-              {layerSource && <Layer>{image && <KonvaImage image={image} width={900} height={560} opacity={0.9} />}</Layer>}
+              {layerSource && <Layer>{image && <KonvaImage image={image} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} opacity={0.9} />}</Layer>}
               {layerDigitized && (
                 <Layer>
                   {objects.map((obj) => {

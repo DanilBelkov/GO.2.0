@@ -7,6 +7,7 @@ namespace GO2.Api.Application.Maps;
 public interface IMapCommandService
 {
     Task<MapDetailsResponse> UploadAsync(Guid userId, IFormFile file, CancellationToken cancellationToken);
+    Task<MapDetailsResponse> UploadOcdAsync(Guid userId, IFormFile file, CancellationToken cancellationToken);
     Task<StartDigitizationResponse?> StartDigitizationAsync(Guid userId, Guid mapId, StartDigitizationRequest request, CancellationToken cancellationToken);
     Task<MapVersionResponse?> SaveTerrainObjectsAsync(Guid userId, Guid mapId, SaveTerrainObjectsRequest request, CancellationToken cancellationToken);
 }

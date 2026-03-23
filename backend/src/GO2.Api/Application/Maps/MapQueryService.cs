@@ -8,6 +8,15 @@ namespace GO2.Api.Application.Maps;
 // Реализация CQRS-запросов для карт.
 public sealed class MapQueryService(AppDbContext dbContext, IFileStorage fileStorage) : IMapQueryService
 {
+    private static readonly byte[] TransparentPngBytes =
+    [
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+        0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196,
+        137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 15, 4, 0,
+        9, 251, 3, 253, 167, 129, 214, 26, 0, 0, 0, 0, 73, 69, 78, 68,
+        174, 66, 96, 130
+    ];
+
     public async Task<IReadOnlyCollection<MapListItemResponse>> GetMapsAsync(Guid userId, CancellationToken cancellationToken)
     {
         return await dbContext.Maps
@@ -77,8 +86,23 @@ public sealed class MapQueryService(AppDbContext dbContext, IFileStorage fileSto
 
         var stream = await fileStorage.OpenReadAsync(map.OriginalFilePath, cancellationToken);
         var ext = Path.GetExtension(map.OriginalFilePath).ToLowerInvariant();
-        var contentType = ext == ".png" ? "image/png" : "image/jpeg";
-        return (stream, contentType);
+        if (ext == ".png")
+        {
+            return (stream, "image/png");
+        }
+
+        if (ext == ".jpg" || ext == ".jpeg")
+        {
+            return (stream, "image/jpeg");
+        }
+
+        stream.Dispose();
+        if (ext == ".ocd")
+        {
+            return (new MemoryStream(TransparentPngBytes, writable: false), "image/png");
+        }
+
+        return null;
     }
 
     public async Task<DigitizationJobStatusResponse?> GetDigitizationStatusAsync(

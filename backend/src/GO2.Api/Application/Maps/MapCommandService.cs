@@ -11,10 +11,12 @@ namespace GO2.Api.Application.Maps;
 public sealed class MapCommandService(
     AppDbContext dbContext,
     IFileStorage fileStorage,
+    IOcdImportService ocdImportService,
     IServiceScopeFactory serviceScopeFactory,
     ILogger<MapCommandService> logger) : IMapCommandService
 {
     private static readonly HashSet<string> AllowedContentTypes = ["image/png", "image/jpeg"];
+    private static readonly HashSet<string> AllowedOcdExtensions = [".ocd"];
     private const long MaxFileSize = 20 * 1024 * 1024;
 
     public async Task<MapDetailsResponse> UploadAsync(Guid userId, IFormFile file, CancellationToken cancellationToken)
@@ -54,6 +56,85 @@ public sealed class MapCommandService(
         await dbContext.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("Карта загружена {MapId} пользователем {UserId}", map.Id, userId);
+        return new MapDetailsResponse
+        {
+            Id = map.Id,
+            Name = map.Name,
+            Status = map.Status,
+            CreatedAtUtc = map.CreatedAtUtc,
+            ActiveVersionId = version.Id
+        };
+    }
+
+    public async Task<MapDetailsResponse> UploadOcdAsync(Guid userId, IFormFile file, CancellationToken cancellationToken)
+    {
+        if (file.Length == 0 || file.Length > MaxFileSize)
+        {
+            throw new InvalidOperationException("INVALID_FILE_SIZE");
+        }
+
+        var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+        if (!AllowedOcdExtensions.Contains(extension))
+        {
+            throw new InvalidOperationException("INVALID_OCD_FILE_TYPE");
+        }
+
+        byte[] bytes;
+        await using (var input = file.OpenReadStream())
+        using (var memory = new MemoryStream())
+        {
+            await input.CopyToAsync(memory, cancellationToken);
+            bytes = memory.ToArray();
+        }
+
+        var parsedObjects = ocdImportService.Parse(bytes);
+
+        await using var saveStream = new MemoryStream(bytes);
+        var originalPath = await fileStorage.SaveAsync(saveStream, extension, cancellationToken);
+
+        var map = new Map
+        {
+            OwnerUserId = userId,
+            Name = Path.GetFileNameWithoutExtension(file.FileName),
+            OriginalFilePath = originalPath,
+            Status = parsedObjects.Count > 0 ? MapStatus.Edited : MapStatus.Uploaded
+        };
+
+        var version = new MapVersion
+        {
+            Map = map,
+            VersionNumber = 1,
+            WorkingFilePath = originalPath,
+            Notes = $"OCAD import ({parsedObjects.Count} objects)"
+        };
+
+        map.Versions.Add(version);
+        dbContext.Maps.Add(map);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        if (parsedObjects.Count > 0)
+        {
+            var entities = parsedObjects.Select(x => new TerrainObject
+            {
+                MapId = map.Id,
+                MapVersionId = version.Id,
+                TerrainClass = x.TerrainClass,
+                GeometryKind = x.GeometryKind,
+                GeometryJson = x.GeometryJson,
+                Traversability = x.Traversability,
+                Source = TerrainObjectSource.Auto
+            });
+
+            dbContext.TerrainObjects.AddRange(entities);
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        logger.LogInformation(
+            "OCAD карта загружена {MapId} пользователем {UserId}; импортировано объектов {ObjectCount}",
+            map.Id,
+            userId,
+            parsedObjects.Count);
+
         return new MapDetailsResponse
         {
             Id = map.Id,

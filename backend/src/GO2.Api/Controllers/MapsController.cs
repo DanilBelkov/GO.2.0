@@ -32,6 +32,32 @@ public sealed class MapsController(IMapCommandService commandService, IMapQueryS
         }
     }
 
+    [HttpPost("upload-ocd")]
+    [RequestFormLimits(MultipartBodyLengthLimit = MaxFileSize)]
+    public async Task<ActionResult<MapDetailsResponse>> UploadOcd([FromForm] IFormFile file, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await commandService.UploadOcdAsync(User.GetRequiredUserId(), file, cancellationToken));
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "INVALID_FILE_SIZE")
+        {
+            return BadRequest(new ProblemDetails { Title = "Некорректный размер файла." });
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "INVALID_OCD_FILE_TYPE")
+        {
+            return BadRequest(new ProblemDetails { Title = "Поддерживается только формат .ocd." });
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "INVALID_OCD_SIGNATURE")
+        {
+            return BadRequest(new ProblemDetails { Title = "Файл не распознан как OCAD (неверная сигнатура)." });
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "OCD_PARSE_FAILED")
+        {
+            return BadRequest(new ProblemDetails { Title = "Не удалось извлечь базовые объекты из OCAD файла." });
+        }
+    }
+
     [HttpGet]
     public async Task<ActionResult<IReadOnlyCollection<MapListItemResponse>>> GetMaps(CancellationToken cancellationToken)
     {

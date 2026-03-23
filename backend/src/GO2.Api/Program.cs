@@ -63,6 +63,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
 builder.Services.AddScoped<IFileStorage, LocalFileStorage>();
+builder.Services.AddScoped<IOcdImportService, OcdImportService>();
 builder.Services.AddScoped<IDigitizationPipelineService, DigitizationPipelineService>();
 builder.Services.AddScoped<IDigitizationQualityService, DigitizationQualityService>();
 builder.Services.AddScoped<IAuthCommandService, AuthCommandService>();

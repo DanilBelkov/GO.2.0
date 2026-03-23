@@ -234,6 +234,12 @@ export async function uploadMap(file: File): Promise<void> {
   await request('/maps/upload', { method: 'POST', body });
 }
 
+export async function uploadOcdMap(file: File): Promise<void> {
+  const body = new FormData();
+  body.append('file', file);
+  await request('/maps/upload-ocd', { method: 'POST', body });
+}
+
 // Загружает защищенное изображение карты и возвращает blob URL для <img>/<KonvaImage>.
 export async function getMapImageObjectUrl(mapId: string): Promise<string> {
   const token = getAccessToken();
