@@ -1,54 +1,38 @@
-using GO2.Api.Contracts;
+﻿using GO2.Api.Contracts;
 using GO2.Api.Models;
 
 namespace GO2.Api.Application.Routes;
 
-// Базовый движок маршрутизации: строит взвешенный граф по сетке, считает top-3 и explainability.
+// Routing engine on navmesh: graph nodes are object geometry vertices,
+// edge weights are evaluated through navmesh traversal and rule priorities.
 public sealed class RoutingEngineService
 {
-    private const int GridWidth = 40;
-    private const int GridHeight = 24;
-    private const double CanvasWidth = 900;
-    private const double CanvasHeight = 560;
+    private const double NavCellSize = 24;
+    private const double NeighborRadius = 90;
+    private const int MaxNeighborsPerNode = 10;
 
     public RouteGraphResponse BuildGraph(IReadOnlyCollection<TerrainObject> objects, RouteProfileDto profile)
     {
-        var graph = BuildGridGraph(objects, profile);
-        var nodes = new List<RouteGraphNodeDto>();
-        var edges = new List<RouteGraphEdgeDto>();
-
-        for (var x = 0; x < GridWidth; x++)
-        {
-            for (var y = 0; y < GridHeight; y++)
+        var context = BuildRoutingContext(objects, profile);
+        var nodes = context.Graph.Nodes.Values
+            .Select(node => new RouteGraphNodeDto
             {
-                if (graph.Blocked[x, y])
-                {
-                    continue;
-                }
-
-                var point = new GridPoint(x, y);
-                nodes.Add(new RouteGraphNodeDto
-                {
-                    Id = ToNodeId(point),
-                    X = ToCanvas(point).X,
-                    Y = ToCanvas(point).Y
-                });
-
-                // Ребра "вправо/вниз", чтобы не дублировать визуализацию неориентированного графа.
-                AddEdgeIfWalkable(graph, edges, point, new GridPoint(x + 1, y));
-                AddEdgeIfWalkable(graph, edges, point, new GridPoint(x, y + 1));
-            }
-        }
+                Id = node.Id,
+                X = node.Point.X,
+                Y = node.Point.Y
+            })
+            .ToList();
+        var edges = context.Graph.ToRouteEdges();
 
         return new RouteGraphResponse
         {
             Nodes = nodes,
             Edges = edges,
-            GridWidth = GridWidth,
-            GridHeight = GridHeight,
+            GridWidth = context.NavMesh.Columns,
+            GridHeight = context.NavMesh.Rows,
             Summary = nodes.Count == 0
-                ? "Не удалось построить граф: вся карта непроходима."
-                : $"Построен граф: {nodes.Count} узлов, {edges.Count} ребер."
+                ? "Не удалось построить граф: отсутствуют проходимые вершины."
+                : $"Построен navmesh-граф: {nodes.Count} узлов, {edges.Count} ребер."
         };
     }
 
@@ -57,8 +41,8 @@ public sealed class RoutingEngineService
         IReadOnlyList<RoutePointDto> waypoints,
         RouteProfileDto profile)
     {
-        var graph = BuildGridGraph(objects, profile);
-        var variants = BuildTop3(graph, waypoints, profile);
+        var context = BuildRoutingContext(objects, profile);
+        var variants = BuildTop3(context.Graph, waypoints, profile);
         return new RouteCalculationResultDto
         {
             Routes = variants,
@@ -68,88 +52,149 @@ public sealed class RoutingEngineService
         };
     }
 
-    private static void AddEdgeIfWalkable(GridGraph graph, List<RouteGraphEdgeDto> edges, GridPoint from, GridPoint to)
+    private static RoutingContext BuildRoutingContext(IReadOnlyCollection<TerrainObject> objects, RouteProfileDto profile)
     {
-        if (!IsInside(to) || graph.Blocked[to.X, to.Y] || graph.Blocked[from.X, from.Y])
-        {
-            return;
-        }
-
-        edges.Add(new RouteGraphEdgeDto
-        {
-            FromNodeId = ToNodeId(from),
-            ToNodeId = ToNodeId(to),
-            Weight = Math.Round((graph.Weights[from.X, from.Y] + graph.Weights[to.X, to.Y]) / 2.0, 3)
-        });
+        var prepared = objects.Select(PrepareObject).Where(x => x is not null).Select(x => x!).ToList();
+        var bounds = CalculateBounds(prepared);
+        var areaFeatures = prepared.Where(x => x.GeometryKind == TerrainGeometryKind.Polygon).ToList();
+        var lineFeatures = prepared.Where(x => x.GeometryKind == TerrainGeometryKind.Line).ToList();
+        var navMesh = BuildNavMesh(areaFeatures, profile, bounds);
+        var graph = BuildObjectGraph(prepared, areaFeatures, lineFeatures, navMesh, profile);
+        return new RoutingContext(graph, navMesh);
     }
 
-    private static GridGraph BuildGridGraph(IReadOnlyCollection<TerrainObject> objects, RouteProfileDto profile)
+    private static NavMesh BuildNavMesh(
+        IReadOnlyCollection<PreparedTerrainObject> areaFeatures,
+        RouteProfileDto profile,
+        MapBounds bounds)
     {
-        var weights = new double[GridWidth, GridHeight];
-        var blocked = new bool[GridWidth, GridHeight];
+        var width = Math.Max(1.0, bounds.MaxX - bounds.MinX);
+        var height = Math.Max(1.0, bounds.MaxY - bounds.MinY);
+        var columns = Math.Max(1, (int)Math.Ceiling(width / NavCellSize));
+        var rows = Math.Max(1, (int)Math.Ceiling(height / NavCellSize));
+        var costs = new double[columns, rows];
+        var blocked = new bool[columns, rows];
+        var navMesh = new NavMesh(columns, rows, costs, blocked, bounds);
 
-        for (var x = 0; x < GridWidth; x++)
+        for (var x = 0; x < columns; x++)
         {
-            for (var y = 0; y < GridHeight; y++)
+            for (var y = 0; y < rows; y++)
             {
-                weights[x, y] = 1.0;
+                var center = navMesh.ToCellCenter(x, y);
+                var areaAtPoint = areaFeatures
+                    .Where(a => PointInPolygon(center, a.Points))
+                    .ToList();
+
+                if (areaAtPoint.Any(a => a.IsImpassable))
+                {
+                    blocked[x, y] = true;
+                    costs[x, y] = double.PositiveInfinity;
+                    continue;
+                }
+
+                var areaCost = 1.0;
+                foreach (var area in areaAtPoint)
+                {
+                    areaCost = Math.Max(areaCost, BuildSurfaceCost(area, profile));
+                }
+
                 blocked[x, y] = false;
+                costs[x, y] = areaCost;
             }
         }
+
+        return navMesh;
+    }
+
+    private static ObjectGraph BuildObjectGraph(
+        IReadOnlyCollection<PreparedTerrainObject> objects,
+        IReadOnlyCollection<PreparedTerrainObject> areaFeatures,
+        IReadOnlyCollection<PreparedTerrainObject> lineFeatures,
+        NavMesh navMesh,
+        RouteProfileDto profile)
+    {
+        var graph = new ObjectGraph();
 
         foreach (var obj in objects)
         {
-            var affectedCells = GetAffectedCells(obj);
-            if (affectedCells.Count == 0)
+            for (var i = 0; i < obj.Points.Count; i++)
             {
-                continue;
+                var nodeId = BuildObjectPointKey(obj.ObjectId, i);
+                if (graph.Nodes.ContainsKey(nodeId))
+                {
+                    continue;
+                }
+
+                graph.Nodes[nodeId] = new GraphNode(nodeId, obj.Points[i]);
             }
+        }
 
-            var traversability = (double)GetEffectiveTraversability(obj);
-            var markBlocked = traversability <= 0.05;
-            var terrainRisk = obj.TerrainClass switch
+        // 1) Required edges along line objects. Line coefficient has priority over area.
+        foreach (var line in lineFeatures)
+        {
+            for (var i = 1; i < line.Points.Count; i++)
             {
-                TerrainClass.Water => 2.2,
-                TerrainClass.Rock => 1.7,
-                TerrainClass.Vegetation => 1.25,
-                TerrainClass.ManMade => 1.1,
-                _ => 1.0
-            };
-            var movementPenalty = Math.Clamp(1.0 / Math.Max(0.05, traversability), 0.2, 10.0);
-            var blendedPenalty = profile.TimeWeight * movementPenalty + profile.SafetyWeight * terrainRisk;
-
-            foreach (var cell in affectedCells)
-            {
-                if (!IsInside(cell))
+                var fromId = BuildObjectPointKey(line.ObjectId, i - 1);
+                var toId = BuildObjectPointKey(line.ObjectId, i);
+                if (!graph.Nodes.TryGetValue(fromId, out var fromNode) || !graph.Nodes.TryGetValue(toId, out var toNode))
                 {
                     continue;
                 }
 
-                if (markBlocked)
-                {
-                    blocked[cell.X, cell.Y] = true;
-                    continue;
-                }
+                var cost = EstimateSegmentCost(
+                    fromNode.Point,
+                    toNode.Point,
+                    areaFeatures,
+                    profile,
+                    lineTraversabilityOverride: line.Traversability);
 
-                if (!blocked[cell.X, cell.Y])
+                if (double.IsFinite(cost))
                 {
-                    weights[cell.X, cell.Y] = Math.Max(weights[cell.X, cell.Y], blendedPenalty);
+                    graph.AddUndirectedEdge(fromId, toId, cost);
                 }
             }
         }
 
-        return new GridGraph(weights, blocked);
+        // 2) Additional local edges through navmesh cost.
+        var nodeList = graph.Nodes.Values.ToList();
+        var buckets = BuildSpatialBuckets(nodeList);
+        var navPathCache = new Dictionary<string, double>();
+
+        foreach (var node in nodeList)
+        {
+            var candidates = FindNeighborCandidates(node, nodeList, buckets)
+                .Where(c => c.Id != node.Id && !graph.HasEdge(node.Id, c.Id))
+                .Select(c => new { Node = c, Distance = Euclidean(node.Point, c.Point) })
+                .Where(x => x.Distance <= NeighborRadius && x.Distance > 0.001)
+                .OrderBy(x => x.Distance)
+                .Take(MaxNeighborsPerNode)
+                .ToList();
+
+            foreach (var candidate in candidates)
+            {
+                var cost = EstimateNavMeshCost(node.Point, candidate.Node.Point, navMesh, navPathCache);
+                if (!double.IsFinite(cost))
+                {
+                    continue;
+                }
+
+                graph.AddUndirectedEdge(node.Id, candidate.Node.Id, cost);
+            }
+        }
+
+        graph.RecalculateHeuristicScale();
+        return graph;
     }
 
-    private List<RouteVariantDto> BuildTop3(GridGraph graph, IReadOnlyList<RoutePointDto> waypoints, RouteProfileDto profile)
+    private List<RouteVariantDto> BuildTop3(ObjectGraph graph, IReadOnlyList<RoutePointDto> waypoints, RouteProfileDto profile)
     {
-        if (waypoints.Count < 2)
+        if (waypoints.Count < 2 || graph.Nodes.Count == 0)
         {
             return [];
         }
 
         var snapped = waypoints
-            .Select(point => SnapToWalkableNode(graph, ToGrid, point))
+            .Select(point => SnapToGraphNode(graph, point))
             .ToList();
 
         if (snapped.Any(x => x is null))
@@ -157,9 +202,9 @@ public sealed class RoutingEngineService
             return [];
         }
 
-        var snappedWaypoints = snapped.Select(x => x!.Value).ToList();
+        var snappedWaypoints = snapped.Select(x => x!).ToList();
         var result = new List<RouteVariantDto>();
-        var penalties = new double[GridWidth, GridHeight];
+        var penalties = new Dictionary<string, double>();
 
         for (var i = 0; i < 6 && result.Count < 3; i++)
         {
@@ -176,10 +221,9 @@ public sealed class RoutingEngineService
                 result.Add(candidate);
             }
 
-            // Штрафуем использованные клетки, чтобы получить разнообразные альтернативы.
-            foreach (var point in path)
+            foreach (var nodeId in path)
             {
-                penalties[point.X, point.Y] += 1.4 + i * 0.35;
+                penalties[nodeId] = penalties.GetValueOrDefault(nodeId) + 1.4 + i * 0.35;
             }
         }
 
@@ -190,58 +234,30 @@ public sealed class RoutingEngineService
         }).ToList();
     }
 
-    private static GridPoint? SnapToWalkableNode(GridGraph graph, Func<RoutePointDto, GridPoint> toGrid, RoutePointDto point)
+    private static string? SnapToGraphNode(ObjectGraph graph, RoutePointDto point)
     {
-        var start = toGrid(point);
-        if (IsInside(start) && !graph.Blocked[start.X, start.Y])
+        string? bestNodeId = null;
+        var bestDistance = double.MaxValue;
+
+        foreach (var node in graph.Nodes.Values)
         {
-            return start;
-        }
-
-        for (var radius = 1; radius <= Math.Max(GridWidth, GridHeight); radius++)
-        {
-            GridPoint? best = null;
-            var bestDistance = double.MaxValue;
-
-            for (var dx = -radius; dx <= radius; dx++)
+            var distance = Euclidean(point, node.Point);
+            if (distance < bestDistance)
             {
-                for (var dy = -radius; dy <= radius; dy++)
-                {
-                    if (Math.Abs(dx) != radius && Math.Abs(dy) != radius)
-                    {
-                        continue;
-                    }
-
-                    var candidate = new GridPoint(start.X + dx, start.Y + dy);
-                    if (!IsInside(candidate) || graph.Blocked[candidate.X, candidate.Y])
-                    {
-                        continue;
-                    }
-
-                    var distance = Math.Sqrt(dx * dx + dy * dy);
-                    if (distance < bestDistance)
-                    {
-                        bestDistance = distance;
-                        best = candidate;
-                    }
-                }
-            }
-
-            if (best is not null)
-            {
-                return best;
+                bestDistance = distance;
+                bestNodeId = node.Id;
             }
         }
 
-        return null;
+        return bestNodeId;
     }
 
-    private static List<GridPoint> BuildPathForWaypoints(
-        GridGraph graph,
-        double[,] penalties,
-        IReadOnlyList<GridPoint> waypoints)
+    private static List<string> BuildPathForWaypoints(
+        ObjectGraph graph,
+        Dictionary<string, double> penalties,
+        IReadOnlyList<string> waypoints)
     {
-        var all = new List<GridPoint>();
+        var all = new List<string>();
         for (var i = 0; i < waypoints.Count - 1; i++)
         {
             var segment = AStar(graph, penalties, waypoints[i], waypoints[i + 1]);
@@ -261,41 +277,41 @@ public sealed class RoutingEngineService
         return all;
     }
 
-    private static List<GridPoint> AStar(GridGraph graph, double[,] penalties, GridPoint start, GridPoint end)
+    private static List<string> AStar(
+        ObjectGraph graph,
+        Dictionary<string, double> penalties,
+        string startNodeId,
+        string endNodeId)
     {
-        if (!IsInside(start) || !IsInside(end) || graph.Blocked[start.X, start.Y] || graph.Blocked[end.X, end.Y])
+        if (!graph.Nodes.ContainsKey(startNodeId) || !graph.Nodes.ContainsKey(endNodeId))
         {
             return [];
         }
 
-        var open = new PriorityQueue<GridPoint, double>();
-        var cameFrom = new Dictionary<GridPoint, GridPoint>();
-        var g = new Dictionary<GridPoint, double> { [start] = 0 };
-        open.Enqueue(start, 0);
+        var open = new PriorityQueue<string, double>();
+        var cameFrom = new Dictionary<string, string>();
+        var g = new Dictionary<string, double> { [startNodeId] = 0 };
+        open.Enqueue(startNodeId, 0);
 
         while (open.Count > 0)
         {
             var current = open.Dequeue();
-            if (current.Equals(end))
+            if (current == endNodeId)
             {
                 return Reconstruct(cameFrom, current);
             }
 
-            foreach (var next in Neighbors(current))
+            foreach (var edge in graph.GetNeighbors(current))
             {
-                if (!IsInside(next) || graph.Blocked[next.X, next.Y])
-                {
-                    continue;
-                }
-
-                var baseWeight = (graph.Weights[current.X, current.Y] + graph.Weights[next.X, next.Y]) / 2.0;
-                var stepCost = baseWeight + penalties[next.X, next.Y];
+                var next = edge.ToNodeId;
+                var stepCost = edge.Weight + penalties.GetValueOrDefault(next);
                 var tentative = g[current] + stepCost;
+
                 if (!g.TryGetValue(next, out var known) || tentative < known)
                 {
                     cameFrom[next] = current;
                     g[next] = tentative;
-                    var f = tentative + Heuristic(next, end);
+                    var f = tentative + Heuristic(graph, next, endNodeId);
                     open.Enqueue(next, f);
                 }
             }
@@ -304,9 +320,9 @@ public sealed class RoutingEngineService
         return [];
     }
 
-    private static List<GridPoint> Reconstruct(Dictionary<GridPoint, GridPoint> cameFrom, GridPoint current)
+    private static List<string> Reconstruct(Dictionary<string, string> cameFrom, string current)
     {
-        var result = new List<GridPoint> { current };
+        var result = new List<string> { current };
         while (cameFrom.TryGetValue(current, out var previous))
         {
             result.Add(previous);
@@ -317,70 +333,49 @@ public sealed class RoutingEngineService
         return result;
     }
 
-    private static IEnumerable<GridPoint> Neighbors(GridPoint point)
+    private static double Heuristic(ObjectGraph graph, string fromNodeId, string toNodeId)
     {
-        yield return new GridPoint(point.X + 1, point.Y);
-        yield return new GridPoint(point.X - 1, point.Y);
-        yield return new GridPoint(point.X, point.Y + 1);
-        yield return new GridPoint(point.X, point.Y - 1);
+        var from = graph.Nodes[fromNodeId].Point;
+        var to = graph.Nodes[toNodeId].Point;
+        return Euclidean(from, to) * graph.MinWeightPerPixel;
     }
 
-    private static double Heuristic(GridPoint a, GridPoint b)
+    private static RouteVariantDto BuildVariant(List<string> pathNodeIds, ObjectGraph graph, int rank, RouteProfileDto profile)
     {
-        return Math.Abs(a.X - b.X) + Math.Abs(a.Y - b.Y);
-    }
-
-    private static bool IsInside(GridPoint point)
-    {
-        return point.X >= 0 && point.Y >= 0 && point.X < GridWidth && point.Y < GridHeight;
-    }
-
-    private static GridPoint ToGrid(RoutePointDto point)
-    {
-        return new GridPoint(
-            Math.Clamp((int)Math.Round(point.X / CanvasWidth * (GridWidth - 1)), 0, GridWidth - 1),
-            Math.Clamp((int)Math.Round(point.Y / CanvasHeight * (GridHeight - 1)), 0, GridHeight - 1));
-    }
-
-    private static RoutePointDto ToCanvas(GridPoint point)
-    {
-        return new RoutePointDto
-        {
-            X = point.X / (double)(GridWidth - 1) * CanvasWidth,
-            Y = point.Y / (double)(GridHeight - 1) * CanvasHeight
-        };
-    }
-
-    private static string ToNodeId(GridPoint point)
-    {
-        return $"{point.X}:{point.Y}";
-    }
-
-    private static RouteVariantDto BuildVariant(List<GridPoint> path, GridGraph graph, int rank, RouteProfileDto profile)
-    {
-        var points = path.Select(ToCanvas).ToList();
+        var points = pathNodeIds.Select(id => graph.Nodes[id].Point).ToList();
         var segments = new List<RouteSegmentDto>();
         double totalCost = 0;
         double risk = 0;
+        double length = 0;
 
-        for (var i = 1; i < path.Count; i++)
+        for (var i = 1; i < pathNodeIds.Count; i++)
         {
-            var from = path[i - 1];
-            var to = path[i];
-            var cellCost = (graph.Weights[from.X, from.Y] + graph.Weights[to.X, to.Y]) / 2.0;
-            var segmentRisk = cellCost > 2.0 ? 0.9 : cellCost > 1.4 ? 0.6 : 0.3;
-            totalCost += cellCost;
+            var fromId = pathNodeIds[i - 1];
+            var toId = pathNodeIds[i];
+            if (!graph.TryGetEdgeWeight(fromId, toId, out var edgeCost))
+            {
+                continue;
+            }
+
+            var fromPoint = graph.Nodes[fromId].Point;
+            var toPoint = graph.Nodes[toId].Point;
+            var distance = Euclidean(fromPoint, toPoint);
+            var segmentRisk = edgeCost > 2.0 ? 0.9 : edgeCost > 1.4 ? 0.6 : 0.3;
+
+            totalCost += edgeCost;
             risk += segmentRisk;
+            length += distance;
+
             segments.Add(new RouteSegmentDto
             {
-                From = ToCanvas(from),
-                To = ToCanvas(to),
-                SegmentCost = Math.Round(cellCost, 3),
+                From = fromPoint,
+                To = toPoint,
+                SegmentCost = Math.Round(edgeCost, 3),
                 SegmentRisk = Math.Round(segmentRisk, 3)
             });
         }
 
-        var length = Math.Max(1.0, path.Count * 12.0);
+        length = Math.Max(1.0, length);
         var estimatedTime = length * (0.7 + profile.TimeWeight);
         var penalty = totalCost * profile.SafetyWeight;
 
@@ -398,9 +393,246 @@ public sealed class RoutingEngineService
             [
                 $"Баланс времени/безопасности: {profile.TimeWeight:0.##}/{profile.SafetyWeight:0.##}.",
                 $"Длина: {Math.Round(length, 2)} м, стоимость: {Math.Round(totalCost, 2)}.",
-                "Маршрут проходит по узлам построенного графа карты."
+                "Маршрут построен по графу точек объектов с учетом navmesh-проходимости."
             ]
         };
+    }
+
+    private static Dictionary<(int X, int Y), List<GraphNode>> BuildSpatialBuckets(IReadOnlyCollection<GraphNode> nodes)
+    {
+        var buckets = new Dictionary<(int X, int Y), List<GraphNode>>();
+        foreach (var node in nodes)
+        {
+            var key = ToBucket(node.Point);
+            if (!buckets.TryGetValue(key, out var list))
+            {
+                list = [];
+                buckets[key] = list;
+            }
+
+            list.Add(node);
+        }
+
+        return buckets;
+    }
+
+    private static IEnumerable<GraphNode> FindNeighborCandidates(
+        GraphNode node,
+        IReadOnlyCollection<GraphNode> allNodes,
+        IReadOnlyDictionary<(int X, int Y), List<GraphNode>> buckets)
+    {
+        var origin = ToBucket(node.Point);
+        var found = new HashSet<string>();
+
+        for (var dx = -1; dx <= 1; dx++)
+        {
+            for (var dy = -1; dy <= 1; dy++)
+            {
+                var key = (origin.X + dx, origin.Y + dy);
+                if (!buckets.TryGetValue(key, out var list))
+                {
+                    continue;
+                }
+
+                foreach (var candidate in list)
+                {
+                    if (found.Add(candidate.Id))
+                    {
+                        yield return candidate;
+                    }
+                }
+            }
+        }
+
+        if (found.Count > 0)
+        {
+            yield break;
+        }
+
+        foreach (var candidate in allNodes)
+        {
+            yield return candidate;
+        }
+    }
+
+    private static (int X, int Y) ToBucket(RoutePointDto point)
+    {
+        var x = (int)Math.Floor(point.X / NeighborRadius);
+        var y = (int)Math.Floor(point.Y / NeighborRadius);
+        return (x, y);
+    }
+
+    private static double EstimateNavMeshCost(
+        RoutePointDto from,
+        RoutePointDto to,
+        NavMesh navMesh,
+        Dictionary<string, double> cache)
+    {
+        var fromCell = navMesh.SnapToWalkableCell(from);
+        var toCell = navMesh.SnapToWalkableCell(to);
+        if (fromCell is null || toCell is null)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var key = BuildPairKey(fromCell.Value.Id, toCell.Value.Id);
+        if (cache.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
+        var cost = FindMeshPathCost(navMesh, fromCell.Value, toCell.Value);
+        cache[key] = cost;
+        return cost;
+    }
+
+    private static double FindMeshPathCost(NavMesh navMesh, MeshCell fromCell, MeshCell toCell)
+    {
+        if (fromCell.Id == toCell.Id)
+        {
+            return Euclidean(fromCell.Center, toCell.Center) * navMesh.Costs[fromCell.X, fromCell.Y];
+        }
+
+        var open = new PriorityQueue<MeshCell, double>();
+        var g = new Dictionary<int, double> { [fromCell.Id] = 0 };
+        open.Enqueue(fromCell, 0);
+
+        while (open.Count > 0)
+        {
+            var current = open.Dequeue();
+            if (current.Id == toCell.Id)
+            {
+                return g[current.Id];
+            }
+
+            foreach (var next in navMesh.Neighbors(current))
+            {
+                var stepCost = Euclidean(current.Center, next.Center)
+                    * ((navMesh.Costs[current.X, current.Y] + navMesh.Costs[next.X, next.Y]) / 2.0);
+                var tentative = g[current.Id] + stepCost;
+
+                if (!g.TryGetValue(next.Id, out var known) || tentative < known)
+                {
+                    g[next.Id] = tentative;
+                    var f = tentative + Euclidean(next.Center, toCell.Center) * navMesh.MinCost;
+                    open.Enqueue(next, f);
+                }
+            }
+        }
+
+        return double.PositiveInfinity;
+    }
+
+    private static double EstimateSegmentCost(
+        RoutePointDto from,
+        RoutePointDto to,
+        IReadOnlyCollection<PreparedTerrainObject> areaFeatures,
+        RouteProfileDto profile,
+        decimal? lineTraversabilityOverride = null)
+    {
+        if (SegmentBlockedByImpassableArea(from, to, areaFeatures))
+        {
+            return double.PositiveInfinity;
+        }
+
+        var distance = Euclidean(from, to);
+        if (distance <= 0.001)
+        {
+            return 0;
+        }
+
+        var areaBase = EstimateAreaBaseCostOnSegment(from, to, areaFeatures, profile);
+        var appliedCost = areaBase;
+
+        // Priority: impassable > line override > area base > default.
+        if (lineTraversabilityOverride.HasValue)
+        {
+            var lineProxy = new PreparedTerrainObject(
+                Guid.Empty,
+                TerrainGeometryKind.Line,
+                TerrainClass.ManMade,
+                lineTraversabilityOverride.Value,
+                false,
+                []);
+            appliedCost = BuildSurfaceCost(lineProxy, profile);
+        }
+
+        return distance * appliedCost;
+    }
+
+    private static bool SegmentBlockedByImpassableArea(
+        RoutePointDto from,
+        RoutePointDto to,
+        IReadOnlyCollection<PreparedTerrainObject> areaFeatures)
+    {
+        var blockers = areaFeatures.Where(a => a.IsImpassable).ToList();
+        if (blockers.Count == 0)
+        {
+            return false;
+        }
+
+        var samples = Math.Max(3, (int)Math.Ceiling(Euclidean(from, to) / 8.0));
+        for (var i = 0; i <= samples; i++)
+        {
+            var t = i / (double)samples;
+            var sample = new RoutePointDto
+            {
+                X = from.X + (to.X - from.X) * t,
+                Y = from.Y + (to.Y - from.Y) * t
+            };
+
+            if (blockers.Any(blocker => PointInPolygon(sample, blocker.Points)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static double EstimateAreaBaseCostOnSegment(
+        RoutePointDto from,
+        RoutePointDto to,
+        IReadOnlyCollection<PreparedTerrainObject> areaFeatures,
+        RouteProfileDto profile)
+    {
+        var samples = Math.Max(3, (int)Math.Ceiling(Euclidean(from, to) / 12.0));
+        var aggregated = 0.0;
+
+        for (var i = 0; i <= samples; i++)
+        {
+            var t = i / (double)samples;
+            var sample = new RoutePointDto
+            {
+                X = from.X + (to.X - from.X) * t,
+                Y = from.Y + (to.Y - from.Y) * t
+            };
+
+            var sampleCost = 1.0;
+            foreach (var area in areaFeatures.Where(a => PointInPolygon(sample, a.Points)))
+            {
+                sampleCost = Math.Max(sampleCost, BuildSurfaceCost(area, profile));
+            }
+
+            aggregated += sampleCost;
+        }
+
+        return aggregated / (samples + 1);
+    }
+
+    private static double BuildSurfaceCost(PreparedTerrainObject obj, RouteProfileDto profile)
+    {
+        var traversability = (double)obj.Traversability;
+        var terrainRisk = obj.TerrainClass switch
+        {
+            TerrainClass.Water => 2.2,
+            TerrainClass.Rock => 1.7,
+            TerrainClass.Vegetation => 1.25,
+            TerrainClass.ManMade => 1.1,
+            _ => 1.0
+        };
+        var movementPenalty = Math.Clamp(1.0 / Math.Max(0.05, traversability), 0.2, 10.0);
+        return profile.TimeWeight * movementPenalty + profile.SafetyWeight * terrainRisk;
     }
 
     private static double Overlap(IReadOnlyCollection<RoutePointDto> first, IReadOnlyCollection<RoutePointDto> second)
@@ -417,95 +649,13 @@ public sealed class RoutingEngineService
         return union == 0 ? 1.0 : intersection / (double)union;
     }
 
-    private static decimal GetEffectiveTraversability(TerrainObject obj)
-    {
-        if (obj.TerrainObjectType is not null)
-        {
-            return obj.TerrainObjectType.Traversability;
-        }
-
-        return obj.Traversability;
-    }
-
-    private static HashSet<GridPoint> GetAffectedCells(TerrainObject obj)
-    {
-        var points = ParsePoints(obj);
-        var cells = new HashSet<GridPoint>();
-        if (points.Count == 0)
-        {
-            return cells;
-        }
-
-        if (obj.GeometryKind == TerrainGeometryKind.Point)
-        {
-            cells.Add(ToGrid(points[0]));
-            return cells;
-        }
-
-        if (obj.GeometryKind == TerrainGeometryKind.Line)
-        {
-            AddPolylineCells(points, cells);
-            return cells;
-        }
-
-        AddPolygonCells(points, cells);
-        return cells;
-    }
-
-    private static void AddPolylineCells(IReadOnlyList<RoutePointDto> points, HashSet<GridPoint> cells)
-    {
-        for (var i = 1; i < points.Count; i++)
-        {
-            var from = points[i - 1];
-            var to = points[i];
-            var distance = Math.Max(Math.Abs(to.X - from.X), Math.Abs(to.Y - from.Y));
-            var steps = Math.Max(1, (int)Math.Ceiling(distance / 8));
-
-            for (var step = 0; step <= steps; step++)
-            {
-                var t = step / (double)steps;
-                var interpolated = new RoutePointDto
-                {
-                    X = from.X + (to.X - from.X) * t,
-                    Y = from.Y + (to.Y - from.Y) * t
-                };
-                cells.Add(ToGrid(interpolated));
-            }
-        }
-    }
-
-    private static void AddPolygonCells(IReadOnlyList<RoutePointDto> points, HashSet<GridPoint> cells)
-    {
-        if (points.Count < 3)
-        {
-            return;
-        }
-
-        AddPolylineCells(points.Concat([points[0]]).ToList(), cells);
-
-        var minX = points.Min(p => p.X);
-        var maxX = points.Max(p => p.X);
-        var minY = points.Min(p => p.Y);
-        var maxY = points.Max(p => p.Y);
-
-        var minGrid = ToGrid(new RoutePointDto { X = minX, Y = minY });
-        var maxGrid = ToGrid(new RoutePointDto { X = maxX, Y = maxY });
-
-        for (var gx = Math.Min(minGrid.X, maxGrid.X); gx <= Math.Max(minGrid.X, maxGrid.X); gx++)
-        {
-            for (var gy = Math.Min(minGrid.Y, maxGrid.Y); gy <= Math.Max(minGrid.Y, maxGrid.Y); gy++)
-            {
-                var center = ToCanvas(new GridPoint(gx, gy));
-                if (PointInPolygon(center, points))
-                {
-                    cells.Add(new GridPoint(gx, gy));
-                }
-            }
-        }
-    }
-
     private static bool PointInPolygon(RoutePointDto point, IReadOnlyList<RoutePointDto> polygon)
     {
+        if (polygon.Count < 3)
+        {
+            return false;
+        }
+
         var inside = false;
         var j = polygon.Count - 1;
         for (var i = 0; i < polygon.Count; j = i++)
@@ -523,6 +673,34 @@ public sealed class RoutingEngineService
         }
 
         return inside;
+    }
+
+    private static PreparedTerrainObject? PrepareObject(TerrainObject obj)
+    {
+        var points = ParsePoints(obj);
+        if (points.Count == 0)
+        {
+            return null;
+        }
+
+        var traversability = GetEffectiveTraversability(obj);
+        return new PreparedTerrainObject(
+            obj.Id,
+            obj.GeometryKind,
+            obj.TerrainClass,
+            traversability,
+            traversability <= 0.05m,
+            points);
+    }
+
+    private static decimal GetEffectiveTraversability(TerrainObject obj)
+    {
+        if (obj.TerrainObjectType is not null)
+        {
+            return obj.TerrainObjectType.Traversability;
+        }
+
+        return obj.Traversability;
     }
 
     private static List<RoutePointDto> ParsePoints(TerrainObject obj)
@@ -555,11 +733,281 @@ public sealed class RoutingEngineService
         }
     }
 
-    private readonly record struct GridPoint(int X, int Y);
-
-    private sealed class GridGraph(double[,] weights, bool[,] blocked)
+    private static MapBounds CalculateBounds(IReadOnlyCollection<PreparedTerrainObject> objects)
     {
-        public double[,] Weights { get; } = weights;
+        var allPoints = objects.SelectMany(x => x.Points).ToList();
+        if (allPoints.Count == 0)
+        {
+            return new MapBounds(0, 0, 1, 1);
+        }
+
+        var minX = allPoints.Min(p => p.X);
+        var minY = allPoints.Min(p => p.Y);
+        var maxX = allPoints.Max(p => p.X);
+        var maxY = allPoints.Max(p => p.Y);
+        if (Math.Abs(maxX - minX) < 0.001)
+        {
+            maxX = minX + 1;
+        }
+
+        if (Math.Abs(maxY - minY) < 0.001)
+        {
+            maxY = minY + 1;
+        }
+
+        return new MapBounds(minX, minY, maxX, maxY);
+    }
+
+    private static double Euclidean(RoutePointDto a, RoutePointDto b)
+    {
+        var dx = a.X - b.X;
+        var dy = a.Y - b.Y;
+        return Math.Sqrt(dx * dx + dy * dy);
+    }
+
+    private static string BuildObjectPointKey(Guid objectId, int pointIndex)
+    {
+        return $"{objectId:N}:{pointIndex}";
+    }
+
+    private static string BuildPairKey(int a, int b)
+    {
+        return a <= b ? $"{a}:{b}" : $"{b}:{a}";
+    }
+
+    private sealed record RoutingContext(ObjectGraph Graph, NavMesh NavMesh);
+    private sealed record MapBounds(double MinX, double MinY, double MaxX, double MaxY);
+
+    private sealed record PreparedTerrainObject(
+        Guid ObjectId,
+        TerrainGeometryKind GeometryKind,
+        TerrainClass TerrainClass,
+        decimal Traversability,
+        bool IsImpassable,
+        IReadOnlyList<RoutePointDto> Points);
+
+    private sealed record GraphNode(string Id, RoutePointDto Point);
+
+    private sealed class ObjectGraph
+    {
+        public Dictionary<string, GraphNode> Nodes { get; } = [];
+        private readonly Dictionary<string, List<RouteGraphEdgeDto>> _adjacency = [];
+        private readonly Dictionary<string, double> _edgeWeights = [];
+        public double MinWeightPerPixel { get; private set; } = 0.8;
+
+        public void AddUndirectedEdge(string fromId, string toId, double weight)
+        {
+            if (fromId == toId || !double.IsFinite(weight) || weight <= 0)
+            {
+                return;
+            }
+
+            var key = BuildPairKeyForNodes(fromId, toId);
+            if (_edgeWeights.TryGetValue(key, out var existing) && existing <= weight)
+            {
+                return;
+            }
+
+            _edgeWeights[key] = weight;
+            AddDirected(fromId, toId, weight);
+            AddDirected(toId, fromId, weight);
+        }
+
+        public bool HasEdge(string fromId, string toId)
+        {
+            return _edgeWeights.ContainsKey(BuildPairKeyForNodes(fromId, toId));
+        }
+
+        public IEnumerable<RouteGraphEdgeDto> GetNeighbors(string nodeId)
+        {
+            if (_adjacency.TryGetValue(nodeId, out var edges))
+            {
+                return edges;
+            }
+
+            return [];
+        }
+
+        public bool TryGetEdgeWeight(string fromId, string toId, out double weight)
+        {
+            return _edgeWeights.TryGetValue(BuildPairKeyForNodes(fromId, toId), out weight);
+        }
+
+        public List<RouteGraphEdgeDto> ToRouteEdges()
+        {
+            return _edgeWeights
+                .Select(x =>
+                {
+                    var split = x.Key.Split('|');
+                    return new RouteGraphEdgeDto
+                    {
+                        FromNodeId = split[0],
+                        ToNodeId = split[1],
+                        Weight = Math.Round(x.Value, 3)
+                    };
+                })
+                .ToList();
+        }
+
+        public void RecalculateHeuristicScale()
+        {
+            var ratios = _edgeWeights
+                .Select(x =>
+                {
+                    var parts = x.Key.Split('|');
+                    if (!Nodes.TryGetValue(parts[0], out var from) || !Nodes.TryGetValue(parts[1], out var to))
+                    {
+                        return double.PositiveInfinity;
+                    }
+
+                    var distance = Euclidean(from.Point, to.Point);
+                    return distance <= 0.001 ? double.PositiveInfinity : x.Value / distance;
+                })
+                .Where(double.IsFinite)
+                .ToList();
+
+            MinWeightPerPixel = ratios.Count == 0 ? 0.8 : Math.Max(0.01, ratios.Min());
+        }
+
+        private void AddDirected(string fromId, string toId, double weight)
+        {
+            if (!_adjacency.TryGetValue(fromId, out var list))
+            {
+                list = [];
+                _adjacency[fromId] = list;
+            }
+
+            list.RemoveAll(x => x.ToNodeId == toId);
+            list.Add(new RouteGraphEdgeDto
+            {
+                FromNodeId = fromId,
+                ToNodeId = toId,
+                Weight = weight
+            });
+        }
+
+        private static string BuildPairKeyForNodes(string a, string b)
+        {
+            return string.CompareOrdinal(a, b) <= 0 ? $"{a}|{b}" : $"{b}|{a}";
+        }
+    }
+
+    private readonly record struct MeshCell(int Id, int X, int Y, RoutePointDto Center);
+
+    private sealed class NavMesh(int columns, int rows, double[,] costs, bool[,] blocked, MapBounds bounds)
+    {
+        public int Columns { get; } = columns;
+        public int Rows { get; } = rows;
+        public double[,] Costs { get; } = costs;
         public bool[,] Blocked { get; } = blocked;
+        public MapBounds Bounds { get; } = bounds;
+        public double MinCost { get; } = GetMinCost(costs, blocked);
+
+        public MeshCell? SnapToWalkableCell(RoutePointDto point)
+        {
+            var startX = Math.Clamp((int)Math.Floor((point.X - Bounds.MinX) / NavCellSize), 0, Columns - 1);
+            var startY = Math.Clamp((int)Math.Floor((point.Y - Bounds.MinY) / NavCellSize), 0, Rows - 1);
+
+            if (!Blocked[startX, startY])
+            {
+                return CreateCell(startX, startY);
+            }
+
+            for (var radius = 1; radius <= Math.Max(Columns, Rows); radius++)
+            {
+                MeshCell? best = null;
+                var bestDistance = double.MaxValue;
+
+                for (var dx = -radius; dx <= radius; dx++)
+                {
+                    for (var dy = -radius; dy <= radius; dy++)
+                    {
+                        if (Math.Abs(dx) != radius && Math.Abs(dy) != radius)
+                        {
+                            continue;
+                        }
+
+                        var x = startX + dx;
+                        var y = startY + dy;
+                        if (x < 0 || y < 0 || x >= Columns || y >= Rows || Blocked[x, y])
+                        {
+                            continue;
+                        }
+
+                        var center = ToCellCenter(x, y);
+                        var distance = Euclidean(point, center);
+                        if (distance < bestDistance)
+                        {
+                            bestDistance = distance;
+                            best = CreateCell(x, y);
+                        }
+                    }
+                }
+
+                if (best is not null)
+                {
+                    return best;
+                }
+            }
+
+            return null;
+        }
+
+        public IEnumerable<MeshCell> Neighbors(MeshCell cell)
+        {
+            var neighbors = new[]
+            {
+                (X: cell.X + 1, Y: cell.Y),
+                (X: cell.X - 1, Y: cell.Y),
+                (X: cell.X, Y: cell.Y + 1),
+                (X: cell.X, Y: cell.Y - 1)
+            };
+
+            foreach (var next in neighbors)
+            {
+                if (next.X < 0 || next.Y < 0 || next.X >= Columns || next.Y >= Rows || Blocked[next.X, next.Y])
+                {
+                    continue;
+                }
+
+                yield return CreateCell(next.X, next.Y);
+            }
+        }
+
+        private MeshCell CreateCell(int x, int y)
+        {
+            var id = y * Columns + x;
+            return new MeshCell(id, x, y, ToCellCenter(x, y));
+        }
+
+        public RoutePointDto ToCellCenter(int x, int y)
+        {
+            var cx = Math.Min(Bounds.MaxX, Bounds.MinX + x * NavCellSize + NavCellSize / 2.0);
+            var cy = Math.Min(Bounds.MaxY, Bounds.MinY + y * NavCellSize + NavCellSize / 2.0);
+            return new RoutePointDto { X = cx, Y = cy };
+        }
+
+        private static double GetMinCost(double[,] costs, bool[,] blocked)
+        {
+            var cols = costs.GetLength(0);
+            var rows = costs.GetLength(1);
+            var min = double.PositiveInfinity;
+
+            for (var x = 0; x < cols; x++)
+            {
+                for (var y = 0; y < rows; y++)
+                {
+                    if (blocked[x, y])
+                    {
+                        continue;
+                    }
+
+                    min = Math.Min(min, costs[x, y]);
+                }
+            }
+
+            return double.IsFinite(min) ? Math.Max(0.01, min) : 1.0;
+        }
     }
 }
+

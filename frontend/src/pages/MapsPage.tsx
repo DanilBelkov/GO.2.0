@@ -64,7 +64,6 @@ type RouteRun = {
 
 const CANVAS_WIDTH = 900;
 const CANVAS_HEIGHT = 560;
-const FIT_PADDING = 24;
 const POINT_RADIUS = 3;
 const POINT_RADIUS_SELECTED = 4;
 const OBJECT_STROKE_WIDTH = 1.4;
@@ -236,18 +235,13 @@ export function MapsPage() {
       if (p.y > maxY) maxY = p.y;
     }
 
-    const boundsWidth = Math.max(1, maxX - minX);
-    const boundsHeight = Math.max(1, maxY - minY);
-    const fitScaleX = (CANVAS_WIDTH - FIT_PADDING * 2) / boundsWidth;
-    const fitScaleY = (CANVAS_HEIGHT - FIT_PADDING * 2) / boundsHeight;
-    const nextScale = Math.max(0.08, Math.min(2.5, Math.min(fitScaleX, fitScaleY)));
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
     const displayCenter = worldToCanvas({ x: centerX, y: centerY });
-    const offsetX = CANVAS_WIDTH / 2 - displayCenter.x * nextScale;
-    const offsetY = CANVAS_HEIGHT / 2 - displayCenter.y * nextScale;
+    const offsetX = CANVAS_WIDTH / 2 - displayCenter.x;
+    const offsetY = CANVAS_HEIGHT / 2 - displayCenter.y;
 
-    setScale(nextScale);
+    setScale(1);
     setStagePos({ x: offsetX, y: offsetY });
   }
 
