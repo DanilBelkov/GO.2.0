@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Serialization;
 using GO2.Api.Application.Auth;
 using GO2.Api.Application.Maps;
 using GO2.Api.Application.Routes;
@@ -14,7 +15,12 @@ using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddControllers();
+builder.Services
+    .AddControllers()
+    .AddJsonOptions(options =>
+    {
+        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter(null, allowIntegerValues: false));
+    });
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
 builder.Services.AddCors(options =>

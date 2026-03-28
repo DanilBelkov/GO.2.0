@@ -65,6 +65,11 @@ type RouteRun = {
 const CANVAS_WIDTH = 900;
 const CANVAS_HEIGHT = 560;
 const FIT_PADDING = 24;
+const POINT_RADIUS = 3;
+const POINT_RADIUS_SELECTED = 4;
+const OBJECT_STROKE_WIDTH = 1.4;
+const OBJECT_STROKE_WIDTH_SELECTED = 2.2;
+const VERTEX_RADIUS = 3;
 
 const CLASS_OPTIONS: TerrainClass[] = ['Vegetation', 'Water', 'Rock', 'Ground', 'ManMade'];
 const OBJECT_COLORS: Record<TerrainClass, string> = {
@@ -200,6 +205,14 @@ export function MapsPage() {
     return OBJECT_COLORS[obj.terrainClass];
   }
 
+  function worldToCanvas(point: RoutePoint): RoutePoint {
+    return { x: point.x, y: -point.y };
+  }
+
+  function canvasToWorld(point: RoutePoint): RoutePoint {
+    return { x: point.x, y: -point.y };
+  }
+
   function fitViewportToObjects(items: EditorObject[]) {
     if (items.length === 0) {
       setScale(1);
@@ -228,9 +241,11 @@ export function MapsPage() {
     const fitScaleX = (CANVAS_WIDTH - FIT_PADDING * 2) / boundsWidth;
     const fitScaleY = (CANVAS_HEIGHT - FIT_PADDING * 2) / boundsHeight;
     const nextScale = Math.max(0.08, Math.min(2.5, Math.min(fitScaleX, fitScaleY)));
-
-    const offsetX = (CANVAS_WIDTH - boundsWidth * nextScale) / 2 - minX * nextScale;
-    const offsetY = (CANVAS_HEIGHT - boundsHeight * nextScale) / 2 - minY * nextScale;
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    const displayCenter = worldToCanvas({ x: centerX, y: centerY });
+    const offsetX = CANVAS_WIDTH / 2 - displayCenter.x * nextScale;
+    const offsetY = CANVAS_HEIGHT / 2 - displayCenter.y * nextScale;
 
     setScale(nextScale);
     setStagePos({ x: offsetX, y: offsetY });
@@ -367,7 +382,10 @@ export function MapsPage() {
     const stage = event.target.getStage();
     const pointer = stage?.getPointerPosition();
     if (!pointer) return null;
-    return { x: (pointer.x - stagePos.x) / scale, y: (pointer.y - stagePos.y) / scale };
+    return canvasToWorld({
+      x: (pointer.x - stagePos.x) / scale,
+      y: (pointer.y - stagePos.y) / scale,
+    });
   }
 
   function onStageClick(event: Konva.KonvaEventObject<MouseEvent>) {
@@ -700,12 +718,13 @@ export function MapsPage() {
                   {objects.map((obj) => {
                     const color = resolveObjectColor(obj);
                     if (obj.geometryKind === 'Point') {
+                      const canvasPoint = worldToCanvas(obj.points[0] ?? { x: 0, y: 0 });
                       return (
                         <Circle
                           key={obj.id}
-                          x={obj.points[0]?.x ?? 0}
-                          y={obj.points[0]?.y ?? 0}
-                          radius={obj.id === selectedObjectId ? 8 : 6}
+                          x={canvasPoint.x}
+                          y={canvasPoint.y}
+                          radius={obj.id === selectedObjectId ? POINT_RADIUS_SELECTED : POINT_RADIUS}
                           fill={color}
                           draggable={obj.id === selectedObjectId}
                           onClick={(e) => {
@@ -715,7 +734,7 @@ export function MapsPage() {
                           onDragEnd={(e) =>
                             updateObject(obj.id, (current) => ({
                               ...current,
-                              points: [{ x: e.target.x(), y: e.target.y() }],
+                              points: [canvasToWorld({ x: e.target.x(), y: e.target.y() })],
                             }))
                           }
                         />
@@ -725,11 +744,14 @@ export function MapsPage() {
                     return (
                       <Line
                         key={obj.id}
-                        points={obj.points.flatMap((p) => [p.x, p.y])}
+                        points={obj.points.flatMap((p) => {
+                          const canvasPoint = worldToCanvas(p);
+                          return [canvasPoint.x, canvasPoint.y];
+                        })}
                         closed={obj.geometryKind === 'Polygon'}
                         fill={obj.geometryKind === 'Polygon' ? `${color}44` : undefined}
                         stroke={color}
-                        strokeWidth={obj.id === selectedObjectId ? 4 : 3}
+                        strokeWidth={obj.id === selectedObjectId ? OBJECT_STROKE_WIDTH_SELECTED : OBJECT_STROKE_WIDTH}
                         onClick={(e) => {
                           e.cancelBubble = true;
                           setSelectedObjectId(obj.id);
@@ -740,54 +762,94 @@ export function MapsPage() {
 
                   {selectedObject?.geometryKind !== 'Point' &&
                     selectedObject?.points.map((p, i) => (
+                      (() => {
+                        const canvasPoint = worldToCanvas(p);
+                        return (
                       <Circle
                         key={`${selectedObject.id}-v-${i}`}
-                        x={p.x}
-                        y={p.y}
-                        radius={5}
+                        x={canvasPoint.x}
+                        y={canvasPoint.y}
+                        radius={VERTEX_RADIUS}
                         fill="#fff"
                         stroke="#111"
                         draggable
                         onDragEnd={(e) =>
                           updateObject(selectedObject.id, (current) => ({
                             ...current,
-                            points: current.points.map((pt, idx) => (idx === i ? { x: e.target.x(), y: e.target.y() } : pt)),
+                            points: current.points.map((pt, idx) => (
+                              idx === i ? canvasToWorld({ x: e.target.x(), y: e.target.y() }) : pt
+                            )),
                           }))
                         }
                       />
+                        );
+                      })()
                     ))}
 
                   {draftPoints.length > 0 && (
-                    <Line points={draftPoints.flatMap((p) => [p.x, p.y])} stroke="#f97316" dash={[7, 6]} strokeWidth={2} />
+                    <Line
+                      points={draftPoints.flatMap((p) => {
+                        const canvasPoint = worldToCanvas(p);
+                        return [canvasPoint.x, canvasPoint.y];
+                      })}
+                      stroke="#f97316"
+                      dash={[7, 6]}
+                      strokeWidth={1.3}
+                    />
                   )}
                 </Layer>
               )}
               {layerGraph && (
                 <Layer>
                   {graphEdgeLines.map((edge, index) => (
+                    (() => {
+                      const from = worldToCanvas(edge.from);
+                      const to = worldToCanvas(edge.to);
+                      return (
                     <Line
                       key={`g-e-${index}`}
-                      points={[edge.from.x, edge.from.y, edge.to.x, edge.to.y]}
+                      points={[from.x, from.y, to.x, to.y]}
                       stroke="#60a5fa"
                       opacity={0.38}
                       strokeWidth={1}
                     />
+                      );
+                    })()
                   ))}
                   {(graph?.nodes ?? []).map((node) => (
+                    (() => {
+                      const canvasPoint = worldToCanvas({ x: node.x, y: node.y });
+                      return (
                     <Circle
                       key={node.id}
-                      x={node.x}
-                      y={node.y}
-                      radius={1.4}
+                      x={canvasPoint.x}
+                      y={canvasPoint.y}
+                      radius={1.1}
                       fill="#93c5fd"
                       opacity={0.5}
                     />
+                      );
+                    })()
                   ))}
                 </Layer>
               )}
               {layerRoute && <Layer>
-                {routePoints.map((p, i) => <Circle key={`rp-${i}`} x={p.x} y={p.y} radius={6} fill="#f97316" />)}
-                {routeVariants.map((r, i) => <Line key={r.rank} points={r.polyline.flatMap((p) => [p.x, p.y])} stroke={['#f43f5e', '#f97316', '#22c55e'][i]} strokeWidth={selectedRoute?.rank === r.rank ? 5 : 3} opacity={selectedRoute?.rank === r.rank ? 1 : 0.6} />)}
+                {routePoints.map((p, i) => {
+                  const canvasPoint = worldToCanvas(p);
+                  return <Circle key={`rp-${i}`} x={canvasPoint.x} y={canvasPoint.y} radius={3.5} fill="#f97316" />;
+                })}
+                {routeVariants.map((r, i) => (
+                  <Line
+                    key={r.rank}
+                    points={r.polyline.flatMap((p) => {
+                      const canvasPoint = worldToCanvas(p);
+                      return [canvasPoint.x, canvasPoint.y];
+                    })}
+                    stroke={['#f43f5e', '#f97316', '#22c55e'][i]}
+                    strokeWidth={selectedRoute?.rank === r.rank ? 2.5 : 1.6}
+                    opacity={selectedRoute?.rank === r.rank ? 1 : 0.6}
+                  />
+                ))}
               </Layer>}
             </Stage>
           </div>
