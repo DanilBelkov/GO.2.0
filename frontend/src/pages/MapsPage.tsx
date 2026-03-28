@@ -156,6 +156,11 @@ export function MapsPage() {
       .filter((item): item is GraphEdgeLine => item !== null);
   }, [graph, graphNodeById]);
 
+  const digitizedPoints = useMemo<RoutePoint[]>(
+    () => objects.flatMap((obj) => obj.points),
+    [objects],
+  );
+
   function parseObject(item: TerrainObject): EditorObject | null {
     try {
       const parsed = JSON.parse(item.geometryJson) as { x?: number; y?: number; points?: RoutePoint[] };
@@ -245,22 +250,38 @@ export function MapsPage() {
     setStagePos({ x: offsetX, y: offsetY });
   }
 
-  function snapPointToGraph(point: RoutePoint): RoutePoint {
-    if (!graph?.nodes.length) return point;
+  function snapPointToDigitizedPoint(point: RoutePoint): RoutePoint | null {
+    if (!digitizedPoints.length) return null;
 
-    let best = graph.nodes[0];
+    const maxDistanceInWorld = 12 / Math.max(0.01, scale);
+    const maxDistanceSq = maxDistanceInWorld * maxDistanceInWorld;
+    let best: RoutePoint | null = null;
     let bestDistance = Number.POSITIVE_INFINITY;
-    for (const node of graph.nodes) {
-      const dx = node.x - point.x;
-      const dy = node.y - point.y;
+    for (const candidate of digitizedPoints) {
+      const dx = candidate.x - point.x;
+      const dy = candidate.y - point.y;
       const distance = dx * dx + dy * dy;
       if (distance < bestDistance) {
         bestDistance = distance;
-        best = node;
+        best = candidate;
       }
     }
 
+    if (!best || bestDistance > maxDistanceSq) {
+      return null;
+    }
+
     return { x: best.x, y: best.y };
+  }
+
+  function toolButtonStyle(mode: ToolMode) {
+    const active = tool === mode;
+    return {
+      background: active ? '#111827' : undefined,
+      color: active ? '#fff' : undefined,
+      borderColor: active ? '#111827' : undefined,
+      fontWeight: active ? 700 : 500,
+    } as const;
   }
 
   async function loadGraph(mapId: string, versionId: string | null) {
@@ -372,7 +393,7 @@ export function MapsPage() {
     }
   }
 
-  function canvasPointFromEvent(event: Konva.KonvaEventObject<MouseEvent>) {
+  function canvasPointFromEvent(event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
     const stage = event.target.getStage();
     const pointer = stage?.getPointerPosition();
     if (!pointer) return null;
@@ -382,17 +403,17 @@ export function MapsPage() {
     });
   }
 
-  function onStageClick(event: Konva.KonvaEventObject<MouseEvent>) {
+  function onStageClick(event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
     const p = canvasPointFromEvent(event);
     if (!p) return;
 
     if (tool === 'route-point') {
-      if (!graph?.nodes.length) {
-        setError('Граф не построен: сначала сохраните/оцифруйте объекты карты.');
+      const snapped = snapPointToDigitizedPoint(p);
+      if (!snapped) {
+        setError('Точка маршрута должна выбираться из существующих оцифрованных вершин.');
         return;
       }
 
-      const snapped = snapPointToGraph(p);
       setRoutePoints((prev) => {
         const last = prev[prev.length - 1];
         if (last && Math.abs(last.x - snapped.x) < 0.0001 && Math.abs(last.y - snapped.y) < 0.0001) {
@@ -662,11 +683,11 @@ export function MapsPage() {
 
       <section className="panel editor-shell">
         <div className="toolbar-group">
-          <button onClick={() => setTool('select')}>Выбор</button>
-          <button onClick={() => setTool('point')}>Точка</button>
-          <button onClick={() => setTool('line')}>Линия</button>
-          <button onClick={() => setTool('polygon')}>Полигон</button>
-          <button onClick={() => setTool('route-point')}>Точки маршрута</button>
+          <button style={toolButtonStyle('select')} onClick={() => setTool('select')}>Выбор</button>
+          <button style={toolButtonStyle('point')} onClick={() => setTool('point')}>Точка</button>
+          <button style={toolButtonStyle('line')} onClick={() => setTool('line')}>Линия</button>
+          <button style={toolButtonStyle('polygon')} onClick={() => setTool('polygon')}>Полигон</button>
+          <button style={toolButtonStyle('route-point')} onClick={() => setTool('route-point')}>Точки маршрута</button>
           <button onClick={finishDraftShape} disabled={draftPoints.length === 0}>Завершить фигуру</button>
           <button onClick={() => setDraftPoints([])} disabled={draftPoints.length === 0}>Очистить черновик</button>
           <button onClick={runDigitization}>Оцифровать</button>
@@ -693,8 +714,8 @@ export function MapsPage() {
           <div className="canvas-panel">
             <div className="layer-switcher">
               <span>Масштаб: {Math.round(scale * 100)}%</span>
-              <button onClick={() => setScale((s) => Math.max(0.4, s - 0.1))}>-</button>
-              <button onClick={() => setScale((s) => Math.min(2.5, s + 0.1))}>+</button>
+              <button onClick={() => setScale((s) => Math.max(0.2, s - 0.1))}>-</button>
+              <button onClick={() => setScale((s) => Math.min(5, s + 0.1))}>+</button>
             </div>
             <Stage
               width={CANVAS_WIDTH}
@@ -704,7 +725,8 @@ export function MapsPage() {
               scale={{ x: scale, y: scale }}
               draggable
               onDragEnd={(e) => setStagePos({ x: e.target.x(), y: e.target.y() })}
-              onMouseDown={onStageClick}
+              onClick={onStageClick}
+              onTap={onStageClick}
             >
               {layerSource && <Layer>{image && <KonvaImage image={image} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} opacity={0.9} />}</Layer>}
               {layerDigitized && (
@@ -720,8 +742,12 @@ export function MapsPage() {
                           y={canvasPoint.y}
                           radius={obj.id === selectedObjectId ? POINT_RADIUS_SELECTED : POINT_RADIUS}
                           fill={color}
-                          draggable={obj.id === selectedObjectId}
+                          draggable={obj.id === selectedObjectId && tool === 'select'}
                           onClick={(e) => {
+                            e.cancelBubble = true;
+                            setSelectedObjectId(obj.id);
+                          }}
+                          onTap={(e) => {
                             e.cancelBubble = true;
                             setSelectedObjectId(obj.id);
                           }}
@@ -746,7 +772,12 @@ export function MapsPage() {
                         fill={obj.geometryKind === 'Polygon' ? `${color}44` : undefined}
                         stroke={color}
                         strokeWidth={obj.id === selectedObjectId ? OBJECT_STROKE_WIDTH_SELECTED : OBJECT_STROKE_WIDTH}
+                        hitStrokeWidth={12}
                         onClick={(e) => {
+                          e.cancelBubble = true;
+                          setSelectedObjectId(obj.id);
+                        }}
+                        onTap={(e) => {
                           e.cancelBubble = true;
                           setSelectedObjectId(obj.id);
                         }}
@@ -766,7 +797,7 @@ export function MapsPage() {
                         radius={VERTEX_RADIUS}
                         fill="#fff"
                         stroke="#111"
-                        draggable
+                        draggable={tool === 'select'}
                         onDragEnd={(e) =>
                           updateObject(selectedObject.id, (current) => ({
                             ...current,
