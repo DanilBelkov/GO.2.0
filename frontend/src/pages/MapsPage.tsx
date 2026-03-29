@@ -744,10 +744,12 @@ export function MapsPage() {
                           fill={color}
                           draggable={obj.id === selectedObjectId && tool === 'select'}
                           onClick={(e) => {
+                            if (tool === 'route-point') return;
                             e.cancelBubble = true;
                             setSelectedObjectId(obj.id);
                           }}
                           onTap={(e) => {
+                            if (tool === 'route-point') return;
                             e.cancelBubble = true;
                             setSelectedObjectId(obj.id);
                           }}
@@ -774,10 +776,12 @@ export function MapsPage() {
                         strokeWidth={obj.id === selectedObjectId ? OBJECT_STROKE_WIDTH_SELECTED : OBJECT_STROKE_WIDTH}
                         hitStrokeWidth={12}
                         onClick={(e) => {
+                          if (tool === 'route-point') return;
                           e.cancelBubble = true;
                           setSelectedObjectId(obj.id);
                         }}
                         onTap={(e) => {
+                          if (tool === 'route-point') return;
                           e.cancelBubble = true;
                           setSelectedObjectId(obj.id);
                         }}
