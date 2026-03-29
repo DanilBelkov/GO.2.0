@@ -7,7 +7,7 @@ namespace GO2.Api.Application.Routes;
 // edge weights are evaluated through navmesh traversal and rule priorities.
 public sealed class RoutingEngineService
 {
-    private const double NavCellSize = 24;
+    private const double NavCellSize = 5;
     private const double NeighborRadius = 90;
     private const int MaxNeighborsPerNode = 10;
 
@@ -52,6 +52,22 @@ public sealed class RoutingEngineService
         };
     }
 
+    public RouteCalculationResultDto CalculateFromGraph(
+        RouteGraphResponse graphResponse,
+        IReadOnlyList<RoutePointDto> waypoints,
+        RouteProfileDto profile)
+    {
+        var graph = BuildObjectGraphFromResponse(graphResponse);
+        var variants = BuildTop3(graph, waypoints, profile);
+        return new RouteCalculationResultDto
+        {
+            Routes = variants,
+            Summary = variants.Count == 0
+                ? "Маршруты не найдены для заданных точек."
+                : $"Найдено {variants.Count} маршрут(а). Лучший вариант: №{variants[0].Rank}."
+        };
+    }
+
     private static RoutingContext BuildRoutingContext(IReadOnlyCollection<TerrainObject> objects, RouteProfileDto profile)
     {
         var prepared = objects.Select(PrepareObject).Where(x => x is not null).Select(x => x!).ToList();
@@ -61,6 +77,23 @@ public sealed class RoutingEngineService
         var navMesh = BuildNavMesh(areaFeatures, profile, bounds);
         var graph = BuildObjectGraph(prepared, areaFeatures, lineFeatures, navMesh, profile);
         return new RoutingContext(graph, navMesh);
+    }
+
+    private static ObjectGraph BuildObjectGraphFromResponse(RouteGraphResponse response)
+    {
+        var graph = new ObjectGraph();
+        foreach (var node in response.Nodes)
+        {
+            graph.Nodes[node.Id] = new GraphNode(node.Id, new RoutePointDto { X = node.X, Y = node.Y });
+        }
+
+        foreach (var edge in response.Edges)
+        {
+            graph.AddUndirectedEdge(edge.FromNodeId, edge.ToNodeId, edge.Weight);
+        }
+
+        graph.RecalculateHeuristicScale();
+        return graph;
     }
 
     private static NavMesh BuildNavMesh(

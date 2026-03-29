@@ -9,6 +9,7 @@ public sealed class MapVersion
     public int VersionNumber { get; set; }
     public string WorkingFilePath { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
+    public string GraphJson { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     // Объекты местности, относящиеся именно к этой версии карты.
     public List<TerrainObject> TerrainObjects { get; set; } = [];
