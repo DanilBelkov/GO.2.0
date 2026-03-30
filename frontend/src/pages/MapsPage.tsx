@@ -62,8 +62,10 @@ type RouteRun = {
   routes: RouteVariant[];
 };
 
-const CANVAS_WIDTH = 900;
-const CANVAS_HEIGHT = 560;
+type MapsTab = 'ingest' | 'editor' | 'routes';
+
+const CANVAS_WIDTH = 1320;
+const CANVAS_HEIGHT = 760;
 const POINT_RADIUS = 1;
 const POINT_RADIUS_SELECTED = 2;
 const OBJECT_STROKE_WIDTH = 0.4;
@@ -111,10 +113,13 @@ export function MapsPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadingOcd, setUploadingOcd] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [newTypeName, setNewTypeName] = useState('');
-  const [newTypeColor, setNewTypeColor] = useState('#22c55e');
-  const [newTypeTraversability, setNewTypeTraversability] = useState(1);
-  const [newTypeComment, setNewTypeComment] = useState('');
+  const [activeTab, setActiveTab] = useState<MapsTab>('ingest');
+  const [typeModalOpen, setTypeModalOpen] = useState(false);
+  const [editingTypeId, setEditingTypeId] = useState<string | null>(null);
+  const [typeFormName, setTypeFormName] = useState('');
+  const [typeFormColor, setTypeFormColor] = useState('#22c55e');
+  const [typeFormTraversability, setTypeFormTraversability] = useState(1);
+  const [typeFormComment, setTypeFormComment] = useState('');
 
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [scale, setScale] = useState(1);
@@ -363,6 +368,17 @@ export function MapsPage() {
       .catch((e: Error) => setError(e.message));
   }, [selectedVersionId]);
 
+  useEffect(() => {
+    if (activeTab === 'routes') {
+      setTool('route-point');
+      return;
+    }
+
+    if (tool === 'route-point') {
+      setTool('select');
+    }
+  }, [activeTab]);
+
   async function onUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -407,7 +423,8 @@ export function MapsPage() {
     const p = canvasPointFromEvent(event);
     if (!p) return;
 
-    if (tool === 'route-point') {
+    if (activeTab === 'routes') {
+      if (tool !== 'route-point') return;
       const snapped = snapPointToDigitizedPoint(p);
       if (!snapped) {
         setError('Точка маршрута должна выбираться из существующих оцифрованных вершин.');
@@ -424,6 +441,8 @@ export function MapsPage() {
       });
       return;
     }
+
+    if (tool === 'route-point') return;
 
     if (tool === 'point') {
       pushHistory([
@@ -574,56 +593,76 @@ export function MapsPage() {
     URL.revokeObjectURL(url);
   }
 
-  async function addTerrainType() {
-    const name = newTypeName.trim();
+  function resetTypeForm() {
+    setTypeFormName('');
+    setTypeFormColor('#22c55e');
+    setTypeFormTraversability(1);
+    setTypeFormComment('');
+  }
+
+  function openCreateTypeModal() {
+    setEditingTypeId(null);
+    resetTypeForm();
+    setTypeModalOpen(true);
+  }
+
+  function openEditTypeModal(type: TerrainType) {
+    setEditingTypeId(type.id);
+    setTypeFormName(type.name);
+    setTypeFormColor(type.color);
+    setTypeFormTraversability(type.traversability);
+    setTypeFormComment(type.comment ?? '');
+    setTypeModalOpen(true);
+  }
+
+  function closeTypeModal() {
+    setTypeModalOpen(false);
+    setEditingTypeId(null);
+  }
+
+  async function saveTerrainTypeFromModal() {
+    const name = typeFormName.trim();
     if (!name) {
       setError('Введите название пользовательского типа');
       return;
     }
 
-    try {
-      const created = await createTerrainType({
-        name,
-        color: newTypeColor,
-        icon: 'custom',
-        traversability: newTypeTraversability,
-        comment: newTypeComment,
-      });
-      setTerrainTypes((prev) => [...prev, created]);
-      setNewTypeName('');
-      setNewTypeComment('');
-      setNewTypeTraversability(1);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Ошибка создания типа');
-    }
-  }
-
-  async function renameTerrainType(type: TerrainType) {
-    const name = window.prompt('Новое название типа', type.name);
-    if (name === null) return;
-
-    const color = window.prompt('Цвет (#RRGGBB)', type.color);
-    if (color === null) return;
-
-    const traversabilityRaw = window.prompt('Проходимость (0.05-10)', String(type.traversability));
-    if (traversabilityRaw === null) return;
-
-    const traversability = Number(traversabilityRaw);
-    if (Number.isNaN(traversability) || traversability < 0.05 || traversability > 10) {
+    if (Number.isNaN(typeFormTraversability) || typeFormTraversability < 0.05 || typeFormTraversability > 10) {
       setError('Проходимость должна быть в диапазоне 0.05-10');
       return;
     }
 
-    const comment = window.prompt('Комментарий', type.comment);
-    if (comment === null) return;
+    if (!editingTypeId) {
+      try {
+        const created = await createTerrainType({
+          name,
+          color: typeFormColor,
+          icon: 'custom',
+          traversability: typeFormTraversability,
+          comment: typeFormComment,
+        });
+        setTerrainTypes((prev) => [...prev, created]);
+        closeTypeModal();
+        resetTypeForm();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Ошибка создания типа');
+      }
+      return;
+    }
+
+    const existingType = terrainTypes.find((x) => x.id === editingTypeId);
+    if (!existingType) {
+      setError('Тип не найден');
+      return;
+    }
 
     try {
-      const updated = await updateTerrainType(type.id, {
-        name: name.trim(),
-        color: color.trim(),
-        icon: type.icon,
-        traversability,
-        comment,
+      const updated = await updateTerrainType(existingType.id, {
+        name,
+        color: typeFormColor,
+        icon: existingType.icon,
+        traversability: typeFormTraversability,
+        comment: typeFormComment,
       });
       setTerrainTypes((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
       setObjects((prev) =>
@@ -633,6 +672,7 @@ export function MapsPage() {
             : obj,
         ),
       );
+      closeTypeModal();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка обновления типа');
     }
@@ -659,333 +699,385 @@ export function MapsPage() {
         <button onClick={() => { clearAuth(); navigate('/login'); }}>Выйти</button>
       </header>
 
-      <section className="panel">
-        <label className="upload">
-          <span>{uploading ? 'Загрузка...' : 'Загрузить карту PNG/JPEG'}</span>
-          <input type="file" accept="image/png,image/jpeg" onChange={onUpload} />
-        </label>
-        <label className="upload">
-          <span>{uploadingOcd ? 'Импорт OCAD...' : 'Импорт карты OCAD (.ocd)'}</span>
-          <input type="file" accept=".ocd,application/octet-stream" onChange={onUploadOcd} />
-        </label>
+      <section className="panel selected-map-banner">
+        <h2>{mapDetails?.name ?? 'Карта не выбрана'}</h2>
       </section>
 
-      <section className="panel">
-        <h2>Список карт</h2>
-        <table><thead><tr><th>Название</th><th>Статус</th><th>Дата</th></tr></thead><tbody>
-          {maps.map((m) => (
-            <tr key={m.id} className={selectedMapId === m.id ? 'selected-row' : ''} onClick={() => setSelectedMapId(m.id)}>
-              <td>{m.name}</td><td>{m.status}</td><td>{new Date(m.createdAtUtc).toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody></table>
+      <section className="panel tabs-shell">
+        <div className="tabs-row">
+          <button className={activeTab === 'ingest' ? 'active-tab' : ''} onClick={() => setActiveTab('ingest')}>Загрузка и оцифровка</button>
+          <button className={activeTab === 'editor' ? 'active-tab' : ''} onClick={() => setActiveTab('editor')}>Редактор карты</button>
+          <button className={activeTab === 'routes' ? 'active-tab' : ''} onClick={() => setActiveTab('routes')}>Маршруты</button>
+        </div>
       </section>
 
-      <section className="panel editor-shell">
-        <div className="toolbar-group">
-          <button style={toolButtonStyle('select')} onClick={() => setTool('select')}>Выбор</button>
-          <button style={toolButtonStyle('point')} onClick={() => setTool('point')}>Точка</button>
-          <button style={toolButtonStyle('line')} onClick={() => setTool('line')}>Линия</button>
-          <button style={toolButtonStyle('polygon')} onClick={() => setTool('polygon')}>Полигон</button>
-          <button style={toolButtonStyle('route-point')} onClick={() => setTool('route-point')}>Точки маршрута</button>
-          <button onClick={finishDraftShape} disabled={draftPoints.length === 0}>Завершить фигуру</button>
-          <button onClick={() => setDraftPoints([])} disabled={draftPoints.length === 0}>Очистить черновик</button>
-          <button onClick={runDigitization}>Оцифровать</button>
-          <button onClick={saveVersion} disabled={saving}>{saving ? 'Сохраняем...' : 'Сохранить версию'}</button>
-          <button onClick={undo} disabled={!history.length}>Undo</button>
-          <button onClick={redoAction} disabled={!redo.length}>Redo</button>
-          <button onClick={runRouting} disabled={routePoints.length < 2}>Рассчитать top-3</button>
-          <button onClick={() => setRoutePoints([])}>Очистить точки</button>
-        </div>
-
-        <div className="toolbar-group">
-          <label>Версия
-            <select value={selectedVersionId ?? ''} onChange={(e) => setSelectedVersionId(e.target.value)}>
-              {versions.map((v) => <option key={v.id} value={v.id}>v{v.versionNumber} ({v.notes})</option>)}
-            </select>
-          </label>
-          <label><input type="checkbox" checked={layerSource} onChange={(e) => setLayerSource(e.target.checked)} /> исходник</label>
-          <label><input type="checkbox" checked={layerDigitized} onChange={(e) => setLayerDigitized(e.target.checked)} /> оцифровка</label>
-          <label><input type="checkbox" checked={layerGraph} onChange={(e) => setLayerGraph(e.target.checked)} /> граф</label>
-          <label><input type="checkbox" checked={layerRoute} onChange={(e) => setLayerRoute(e.target.checked)} /> маршрут</label>
-        </div>
-
-        <div className="editor-main">
-          <div className="canvas-panel">
-            <div className="layer-switcher">
-              <span>Масштаб: {Math.round(scale * 100)}%</span>
-              <button onClick={() => setScale((s) => Math.max(0.2, s - 0.1))}>-</button>
-              <button onClick={() => setScale((s) => Math.min(5, s + 0.1))}>+</button>
+      {activeTab === 'ingest' && (
+        <section className="panel tab-content-stack">
+          <div className="upload-grid">
+            <div className="upload-block">
+              <h3>Загрузка PNG/JPEG</h3>
+              <label className="upload">
+                <span>{uploading ? 'Загрузка...' : 'Загрузить карту PNG/JPEG'}</span>
+                <input type="file" accept="image/png,image/jpeg" onChange={onUpload} />
+              </label>
             </div>
-            <Stage
-              width={CANVAS_WIDTH}
-              height={CANVAS_HEIGHT}
-              x={stagePos.x}
-              y={stagePos.y}
-              scale={{ x: scale, y: scale }}
-              draggable
-              onDragEnd={(e) => setStagePos({ x: e.target.x(), y: e.target.y() })}
-              onClick={onStageClick}
-              onTap={onStageClick}
-            >
-              {layerSource && <Layer>{image && <KonvaImage image={image} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} opacity={0.9} />}</Layer>}
-              {layerDigitized && (
-                <Layer>
-                  {objects.map((obj) => {
-                    const color = resolveObjectColor(obj);
-                    if (obj.geometryKind === 'Point') {
-                      const canvasPoint = worldToCanvas(obj.points[0] ?? { x: 0, y: 0 });
+            <div className="upload-block">
+              <h3>Импорт OCAD</h3>
+              <label className="upload">
+                <span>{uploadingOcd ? 'Импорт OCAD...' : 'Импорт карты OCAD (.ocd)'}</span>
+                <input type="file" accept=".ocd,application/octet-stream" onChange={onUploadOcd} />
+              </label>
+            </div>
+            <div className="upload-block">
+              <h3>Оцифровка</h3>
+              <label>Версия
+                <select value={selectedVersionId ?? ''} onChange={(e) => setSelectedVersionId(e.target.value)}>
+                  {versions.map((v) => <option key={v.id} value={v.id}>v{v.versionNumber} ({v.notes})</option>)}
+                </select>
+              </label>
+              <button onClick={runDigitization} disabled={!selectedMapId || !selectedVersionId}>Оцифровать</button>
+              {digitize && <p className="hint">Статус: {digitize.status} ({digitize.progress}%)</p>}
+            </div>
+          </div>
+
+          <div className="upload-block">
+            <h3>Список карт</h3>
+            <table><thead><tr><th>Название</th><th>Статус</th><th>Дата</th></tr></thead><tbody>
+              {maps.map((m) => (
+                <tr key={m.id} className={selectedMapId === m.id ? 'selected-row' : ''} onClick={() => setSelectedMapId(m.id)}>
+                  <td>{m.name}</td><td>{m.status}</td><td>{new Date(m.createdAtUtc).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody></table>
+          </div>
+        </section>
+      )}
+
+      {(activeTab === 'editor' || activeTab === 'routes') && (
+        <section className="panel editor-shell">
+          <div className="toolbar-group">
+            {activeTab === 'editor' && (
+              <>
+                <button style={toolButtonStyle('select')} onClick={() => setTool('select')}>Выбор</button>
+                <button style={toolButtonStyle('point')} onClick={() => setTool('point')}>Точка</button>
+                <button style={toolButtonStyle('line')} onClick={() => setTool('line')}>Линия</button>
+                <button style={toolButtonStyle('polygon')} onClick={() => setTool('polygon')}>Полигон</button>
+                <button onClick={finishDraftShape} disabled={draftPoints.length === 0}>Завершить фигуру</button>
+                <button onClick={() => setDraftPoints([])} disabled={draftPoints.length === 0}>Очистить</button>
+                <button onClick={undo} disabled={!history.length}>Undo</button>
+                <button onClick={redoAction} disabled={!redo.length}>Redo</button>
+                <button onClick={saveVersion} disabled={saving}>{saving ? 'Сохраняем...' : 'Сохранить версию'}</button>
+              </>
+            )}
+            {activeTab === 'routes' && (
+              <>
+                <button style={toolButtonStyle('route-point')} onClick={() => setTool('route-point')}>Точки маршрута</button>
+                <button onClick={runRouting} disabled={routePoints.length < 2}>Рассчитать top-3</button>
+                <button onClick={() => setRoutePoints([])}>Очистить точки</button>
+                <button onClick={exportCurrentRoute} disabled={!selectedRoute}>Экспорт маршрута</button>
+              </>
+            )}
+          </div>
+
+          <div className="toolbar-group">
+            <label>Версия
+              <select value={selectedVersionId ?? ''} onChange={(e) => setSelectedVersionId(e.target.value)}>
+                {versions.map((v) => <option key={v.id} value={v.id}>v{v.versionNumber} ({v.notes})</option>)}
+              </select>
+            </label>
+            <label><input type="checkbox" checked={layerSource} onChange={(e) => setLayerSource(e.target.checked)} /> исходник</label>
+            <label><input type="checkbox" checked={layerDigitized} onChange={(e) => setLayerDigitized(e.target.checked)} /> оцифровка</label>
+            {activeTab === 'editor' && <label><input type="checkbox" checked={layerGraph} onChange={(e) => setLayerGraph(e.target.checked)} /> граф</label>}
+            <label><input type="checkbox" checked={layerRoute} onChange={(e) => setLayerRoute(e.target.checked)} /> маршрут</label>
+          </div>
+
+          <div className="editor-main">
+            <div className="canvas-panel">
+              <div className="layer-switcher">
+                <span>Масштаб: {Math.round(scale * 100)}%</span>
+                <button onClick={() => setScale((s) => Math.max(0.2, s - 0.1))}>-</button>
+                <button onClick={() => setScale((s) => Math.min(5, s + 0.1))}>+</button>
+              </div>
+              <Stage
+                width={CANVAS_WIDTH}
+                height={CANVAS_HEIGHT}
+                x={stagePos.x}
+                y={stagePos.y}
+                scale={{ x: scale, y: scale }}
+                draggable
+                onDragEnd={(e) => setStagePos({ x: e.target.x(), y: e.target.y() })}
+                onClick={onStageClick}
+                onTap={onStageClick}
+              >
+                {layerSource && <Layer>{image && <KonvaImage image={image} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} opacity={0.9} />}</Layer>}
+                {layerDigitized && (
+                  <Layer>
+                    {objects.map((obj) => {
+                      const color = resolveObjectColor(obj);
+                      if (obj.geometryKind === 'Point') {
+                        const canvasPoint = worldToCanvas(obj.points[0] ?? { x: 0, y: 0 });
+                        return (
+                          <Circle
+                            key={obj.id}
+                            x={canvasPoint.x}
+                            y={canvasPoint.y}
+                            radius={obj.id === selectedObjectId ? POINT_RADIUS_SELECTED : POINT_RADIUS}
+                            fill={color}
+                            draggable={activeTab === 'editor' && obj.id === selectedObjectId && tool === 'select'}
+                            onClick={(e) => {
+                              if (tool === 'route-point' || activeTab !== 'editor') return;
+                              e.cancelBubble = true;
+                              setSelectedObjectId(obj.id);
+                            }}
+                            onTap={(e) => {
+                              if (tool === 'route-point' || activeTab !== 'editor') return;
+                              e.cancelBubble = true;
+                              setSelectedObjectId(obj.id);
+                            }}
+                            onDragEnd={(e) =>
+                              updateObject(obj.id, (current) => ({
+                                ...current,
+                                points: [canvasToWorld({ x: e.target.x(), y: e.target.y() })],
+                              }))
+                            }
+                          />
+                        );
+                      }
+
                       return (
-                        <Circle
+                        <Line
                           key={obj.id}
-                          x={canvasPoint.x}
-                          y={canvasPoint.y}
-                          radius={obj.id === selectedObjectId ? POINT_RADIUS_SELECTED : POINT_RADIUS}
-                          fill={color}
-                          draggable={obj.id === selectedObjectId && tool === 'select'}
+                          points={obj.points.flatMap((p) => {
+                            const canvasPoint = worldToCanvas(p);
+                            return [canvasPoint.x, canvasPoint.y];
+                          })}
+                          closed={obj.geometryKind === 'Polygon'}
+                          fill={obj.geometryKind === 'Polygon' ? `${color}44` : undefined}
+                          stroke={color}
+                          strokeWidth={obj.id === selectedObjectId ? OBJECT_STROKE_WIDTH_SELECTED : OBJECT_STROKE_WIDTH}
+                          hitStrokeWidth={12}
                           onClick={(e) => {
-                            if (tool === 'route-point') return;
+                            if (tool === 'route-point' || activeTab !== 'editor') return;
                             e.cancelBubble = true;
                             setSelectedObjectId(obj.id);
                           }}
                           onTap={(e) => {
-                            if (tool === 'route-point') return;
+                            if (tool === 'route-point' || activeTab !== 'editor') return;
                             e.cancelBubble = true;
                             setSelectedObjectId(obj.id);
                           }}
+                        />
+                      );
+                    })}
+
+                    {activeTab === 'editor' &&
+                      selectedObject?.geometryKind !== 'Point' &&
+                      selectedObject?.points.map((p, i) => (
+                        (() => {
+                          const canvasPoint = worldToCanvas(p);
+                          return (
+                        <Circle
+                          key={`${selectedObject.id}-v-${i}`}
+                          x={canvasPoint.x}
+                          y={canvasPoint.y}
+                          radius={VERTEX_RADIUS}
+                          fill="#fff"
+                          stroke="#111"
+                          draggable={tool === 'select'}
                           onDragEnd={(e) =>
-                            updateObject(obj.id, (current) => ({
+                            updateObject(selectedObject.id, (current) => ({
                               ...current,
-                              points: [canvasToWorld({ x: e.target.x(), y: e.target.y() })],
+                              points: current.points.map((pt, idx) => (
+                                idx === i ? canvasToWorld({ x: e.target.x(), y: e.target.y() }) : pt
+                              )),
                             }))
                           }
                         />
-                      );
-                    }
+                          );
+                        })()
+                      ))}
 
-                    return (
+                    {activeTab === 'editor' && draftPoints.length > 0 && (
                       <Line
-                        key={obj.id}
-                        points={obj.points.flatMap((p) => {
+                        points={draftPoints.flatMap((p) => {
                           const canvasPoint = worldToCanvas(p);
                           return [canvasPoint.x, canvasPoint.y];
                         })}
-                        closed={obj.geometryKind === 'Polygon'}
-                        fill={obj.geometryKind === 'Polygon' ? `${color}44` : undefined}
-                        stroke={color}
-                        strokeWidth={obj.id === selectedObjectId ? OBJECT_STROKE_WIDTH_SELECTED : OBJECT_STROKE_WIDTH}
-                        hitStrokeWidth={12}
-                        onClick={(e) => {
-                          if (tool === 'route-point') return;
-                          e.cancelBubble = true;
-                          setSelectedObjectId(obj.id);
-                        }}
-                        onTap={(e) => {
-                          if (tool === 'route-point') return;
-                          e.cancelBubble = true;
-                          setSelectedObjectId(obj.id);
-                        }}
+                        stroke="#f97316"
+                        dash={[7, 6]}
+                        strokeWidth={1.3}
                       />
-                    );
-                  })}
-
-                  {selectedObject?.geometryKind !== 'Point' &&
-                    selectedObject?.points.map((p, i) => (
+                    )}
+                  </Layer>
+                )}
+                {activeTab === 'editor' && layerGraph && (
+                  <Layer>
+                    {graphEdgeLines.map((edge, index) => (
                       (() => {
-                        const canvasPoint = worldToCanvas(p);
+                        const from = worldToCanvas(edge.from);
+                        const to = worldToCanvas(edge.to);
                         return (
-                      <Circle
-                        key={`${selectedObject.id}-v-${i}`}
-                        x={canvasPoint.x}
-                        y={canvasPoint.y}
-                        radius={VERTEX_RADIUS}
-                        fill="#fff"
-                        stroke="#111"
-                        draggable={tool === 'select'}
-                        onDragEnd={(e) =>
-                          updateObject(selectedObject.id, (current) => ({
-                            ...current,
-                            points: current.points.map((pt, idx) => (
-                              idx === i ? canvasToWorld({ x: e.target.x(), y: e.target.y() }) : pt
-                            )),
-                          }))
-                        }
+                      <Line
+                        key={`g-e-${index}`}
+                        points={[from.x, from.y, to.x, to.y]}
+                        stroke="#60a5fa"
+                        opacity={0.38}
+                        strokeWidth={1}
                       />
                         );
                       })()
                     ))}
-
-                  {draftPoints.length > 0 && (
+                    {(graph?.nodes ?? []).map((node) => (
+                      (() => {
+                        const canvasPoint = worldToCanvas({ x: node.x, y: node.y });
+                        return (
+                      <Circle
+                        key={node.id}
+                        x={canvasPoint.x}
+                        y={canvasPoint.y}
+                        radius={1.1}
+                        fill="#93c5fd"
+                        opacity={0.5}
+                      />
+                        );
+                      })()
+                    ))}
+                  </Layer>
+                )}
+                {layerRoute && <Layer>
+                  {routePoints.map((p, i) => {
+                    const canvasPoint = worldToCanvas(p);
+                    return <Circle key={`rp-${i}`} x={canvasPoint.x} y={canvasPoint.y} radius={POINT_RADIUS_SELECTED} fill="#f97316" />;
+                  })}
+                  {routeVariants.map((r, i) => (
                     <Line
-                      points={draftPoints.flatMap((p) => {
+                      key={r.rank}
+                      points={r.polyline.flatMap((p) => {
                         const canvasPoint = worldToCanvas(p);
                         return [canvasPoint.x, canvasPoint.y];
                       })}
-                      stroke="#f97316"
-                      dash={[7, 6]}
-                      strokeWidth={1.3}
+                      stroke={['#f43f5e', '#f97316', '#22c55e'][i]}
+                      strokeWidth={selectedRoute?.rank === r.rank ? OBJECT_STROKE_WIDTH_SELECTED : OBJECT_STROKE_WIDTH}
+                      opacity={selectedRoute?.rank === r.rank ? 1 : 0.6}
                     />
-                  )}
-                </Layer>
-              )}
-              {layerGraph && (
-                <Layer>
-                  {graphEdgeLines.map((edge, index) => (
-                    (() => {
-                      const from = worldToCanvas(edge.from);
-                      const to = worldToCanvas(edge.to);
-                      return (
-                    <Line
-                      key={`g-e-${index}`}
-                      points={[from.x, from.y, to.x, to.y]}
-                      stroke="#60a5fa"
-                      opacity={0.38}
-                      strokeWidth={1}
-                    />
-                      );
-                    })()
                   ))}
-                  {(graph?.nodes ?? []).map((node) => (
-                    (() => {
-                      const canvasPoint = worldToCanvas({ x: node.x, y: node.y });
-                      return (
-                    <Circle
-                      key={node.id}
-                      x={canvasPoint.x}
-                      y={canvasPoint.y}
-                      radius={1.1}
-                      fill="#93c5fd"
-                      opacity={0.5}
-                    />
-                      );
-                    })()
-                  ))}
-                </Layer>
-              )}
-              {layerRoute && <Layer>
-                {routePoints.map((p, i) => {
-                  const canvasPoint = worldToCanvas(p);
-                  return <Circle key={`rp-${i}`} x={canvasPoint.x} y={canvasPoint.y} radius={POINT_RADIUS_SELECTED} fill="#f97316" />;
-                })}
-                {routeVariants.map((r, i) => (
-                  <Line
-                    key={r.rank}
-                    points={r.polyline.flatMap((p) => {
-                      const canvasPoint = worldToCanvas(p);
-                      return [canvasPoint.x, canvasPoint.y];
-                    })}
-                    stroke={['#f43f5e', '#f97316', '#22c55e'][i]}
-                    strokeWidth={selectedRoute?.rank === r.rank ? OBJECT_STROKE_WIDTH_SELECTED : OBJECT_STROKE_WIDTH}
-                    opacity={selectedRoute?.rank === r.rank ? 1 : 0.6}
-                  />
-                ))}
-              </Layer>}
-            </Stage>
-          </div>
-
-          <aside className="side-panel">
-            <h3>Свойства объекта</h3>
-            {!selectedObject && <p>Объект не выбран</p>}
-            {selectedObject && (
-              <div className="side-group">
-                <label>Класс
-                  <select value={selectedObject.terrainClass} onChange={(e) => updateObject(selectedObject.id, (x) => ({ ...x, terrainClass: e.target.value as TerrainClass }))}>
-                    {CLASS_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                </label>
-                <label>Тип
-                  <select
-                    value={selectedObject.terrainObjectTypeId ?? ''}
-                    onChange={(e) =>
-                      updateObject(selectedObject.id, (x) => {
-                        const typeId = e.target.value || null;
-                        const type = typeId ? terrainTypeById.get(typeId) : null;
-                        return {
-                          ...x,
-                          terrainObjectTypeId: typeId,
-                          traversability: type ? type.traversability : x.traversability,
-                        };
-                      })
-                    }
-                  >
-                    <option value="">Не задан</option>
-                    {terrainTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
-                </label>
-                <label>Проходимость
-                  <input type="number" min={0.05} max={10} step={0.05} value={selectedObject.traversability} onChange={(e) => updateObject(selectedObject.id, (x) => ({ ...x, traversability: Number(e.target.value) }))} />
-                </label>
-                <button onClick={() => pushHistory(objects.filter((x) => x.id !== selectedObject.id))}>Удалить объект</button>
-              </div>
-            )}
-
-            <h3>Типы местности</h3>
-            <div className="side-group">
-              <label>Название
-                <input value={newTypeName} onChange={(e) => setNewTypeName(e.target.value)} placeholder="Например, Болото" />
-              </label>
-              <label>Цвет
-                <input type="color" value={newTypeColor} onChange={(e) => setNewTypeColor(e.target.value)} />
-              </label>
-              <label>Проходимость
-                <input
-                  type="number"
-                  min={0.05}
-                  max={10}
-                  step={0.05}
-                  value={newTypeTraversability}
-                  onChange={(e) => setNewTypeTraversability(Number(e.target.value))}
-                />
-              </label>
-              <label>Комментарий
-                <input value={newTypeComment} onChange={(e) => setNewTypeComment(e.target.value)} />
-              </label>
-              <button onClick={addTerrainType}>Добавить тип</button>
-              {terrainTypes.map((t) => (
-                <div key={t.id} className="types-actions">
-                  <span style={{ color: t.color }}>{t.name}</span>
-                  {!t.isSystem && <button onClick={() => renameTerrainType(t)}>Изм.</button>}
-                  {!t.isSystem && <button onClick={() => removeTerrainType(t.id)}>Уд.</button>}
-                </div>
-              ))}
+                </Layer>}
+              </Stage>
             </div>
 
-            <h3>Маршрутизация</h3>
-            <p>Точек: {routePoints.length}</p>
-            <p>Статус: {routeStatus}</p>
-            <p>Прогресс: {routeProgress}%</p>
-            <p>Узлов графа: {graph?.nodes.length ?? 0}</p>
-            <p>Ребер графа: {graph?.edges.length ?? 0}</p>
-            {graph?.summary && <p>{graph.summary}</p>}
-            <h3>Top-3</h3>
-            {routeVariants.map((r) => <button key={r.rank} onClick={() => setSelectedRouteRank(r.rank)}>#{r.rank}: {r.totalCost.toFixed(1)}</button>)}
-            {selectedRoute && (
-              <div className="side-group">
-                <p>Длина: {selectedRoute.length.toFixed(1)} м</p>
-                <p>Время: {selectedRoute.estimatedTime.toFixed(1)} сек</p>
-                <p>Штраф: {selectedRoute.penaltyScore.toFixed(2)}</p>
-                <h3>Почему этот маршрут</h3>
-                {selectedRoute.whyChosen.map((w, i) => <p key={i}>{w}</p>)}
-                <h3>Легенда риска</h3>
-                <p>Низкий: &lt;0.4 | Средний: 0.4-0.75 | Высокий: &gt;0.75</p>
-                <button onClick={exportCurrentRoute}>Экспорт текущего маршрута</button>
-              </div>
+            {activeTab === 'editor' && (
+              <aside className="side-panel">
+                <h3>Свойства объекта</h3>
+                {!selectedObject && <p>Объект не выбран</p>}
+                {selectedObject && (
+                  <div className="side-group">
+                    <label>Класс
+                      <select value={selectedObject.terrainClass} onChange={(e) => updateObject(selectedObject.id, (x) => ({ ...x, terrainClass: e.target.value as TerrainClass }))}>
+                        {CLASS_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </label>
+                    <label>Тип
+                      <select
+                        value={selectedObject.terrainObjectTypeId ?? ''}
+                        onChange={(e) =>
+                          updateObject(selectedObject.id, (x) => {
+                            const typeId = e.target.value || null;
+                            const type = typeId ? terrainTypeById.get(typeId) : null;
+                            return {
+                              ...x,
+                              terrainObjectTypeId: typeId,
+                              traversability: type ? type.traversability : x.traversability,
+                            };
+                          })
+                        }
+                      >
+                        <option value="">Не задан</option>
+                        {terrainTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                      </select>
+                    </label>
+                    <label>Проходимость
+                      <input type="number" min={0.05} max={10} step={0.05} value={selectedObject.traversability} onChange={(e) => updateObject(selectedObject.id, (x) => ({ ...x, traversability: Number(e.target.value) }))} />
+                    </label>
+                    <button onClick={() => pushHistory(objects.filter((x) => x.id !== selectedObject.id))}>Удалить объект</button>
+                  </div>
+                )}
+
+                <h3>Типы объектов</h3>
+                <div className="side-group">
+                  <button onClick={openCreateTypeModal}>+ Добавить тип</button>
+                  {terrainTypes.map((t) => (
+                    <div key={t.id} className="types-actions">
+                      <span style={{ color: t.color }}>{t.name}</span>
+                      {!t.isSystem && <button onClick={() => openEditTypeModal(t)}>Изм.</button>}
+                      {!t.isSystem && <button onClick={() => removeTerrainType(t.id)}>Уд.</button>}
+                    </div>
+                  ))}
+                </div>
+              </aside>
             )}
 
-            <h3>История запусков</h3>
-            {routeHistory.length === 0 && <p>Пока пусто</p>}
-            {routeHistory.map((run) => (
-              <button key={run.id} onClick={() => { setRoutePoints(run.points); setRouteVariants(run.routes); setSelectedRouteRank(1); }}>
-                {new Date(run.createdAt).toLocaleString()}
-              </button>
-            ))}
+            {activeTab === 'routes' && (
+              <aside className="side-panel">
+                <h3>Маршрутизация</h3>
+                <p>Точек: {routePoints.length}</p>
+                <p>Статус: {routeStatus}</p>
+                <p>Прогресс: {routeProgress}%</p>
+                <h3>Top-3</h3>
+                {routeVariants.map((r) => <button key={r.rank} onClick={() => setSelectedRouteRank(r.rank)}>#{r.rank}: {r.totalCost.toFixed(1)}</button>)}
+                {selectedRoute && (
+                  <div className="side-group">
+                    <p>Длина: {selectedRoute.length.toFixed(1)} м</p>
+                    <p>Время: {selectedRoute.estimatedTime.toFixed(1)} сек</p>
+                    <p>Штраф: {selectedRoute.penaltyScore.toFixed(2)}</p>
+                    <h3>Почему этот маршрут</h3>
+                    {selectedRoute.whyChosen.map((w, i) => <p key={i}>{w}</p>)}
+                  </div>
+                )}
 
-            {digitize && <p>Оцифровка: {digitize.status} ({digitize.progress}%)</p>}
-          </aside>
+                <h3>История запусков</h3>
+                {routeHistory.length === 0 && <p>Пока пусто</p>}
+                {routeHistory.map((run) => (
+                  <button key={run.id} onClick={() => { setRoutePoints(run.points); setRouteVariants(run.routes); setSelectedRouteRank(1); }}>
+                    {new Date(run.createdAt).toLocaleString()}
+                  </button>
+                ))}
+              </aside>
+            )}
+          </div>
+        </section>
+      )}
+
+      {typeModalOpen && (
+        <div className="modal-backdrop" onClick={closeTypeModal}>
+          <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
+            <h3>{editingTypeId ? 'Редактирование типа' : 'Новый тип'}</h3>
+            <label>Название
+              <input value={typeFormName} onChange={(e) => setTypeFormName(e.target.value)} placeholder="Например, Болото" />
+            </label>
+            <label>Цвет
+              <input type="color" value={typeFormColor} onChange={(e) => setTypeFormColor(e.target.value)} />
+            </label>
+            <label>Проходимость
+              <input
+                type="number"
+                min={0.05}
+                max={10}
+                step={0.05}
+                value={typeFormTraversability}
+                onChange={(e) => setTypeFormTraversability(Number(e.target.value))}
+              />
+            </label>
+            <label>Комментарий
+              <input value={typeFormComment} onChange={(e) => setTypeFormComment(e.target.value)} />
+            </label>
+            <div className="modal-actions">
+              <button onClick={saveTerrainTypeFromModal}>Сохранить</button>
+              <button onClick={closeTypeModal}>Отменить</button>
+            </div>
+          </div>
         </div>
-      </section>
+      )}
 
-      {mapDetails && <p className="hint">Активная карта: {mapDetails.name}</p>}
       {error && <p className="error">{error}</p>}
     </div>
   );
