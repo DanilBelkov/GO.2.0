@@ -1,6 +1,7 @@
 using GO2.Api.Contracts;
 using GO2.Api.Data;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 
 namespace GO2.Api.Application.Routes;
 
@@ -61,12 +62,49 @@ public sealed class RouteQueryService(
             };
         }
 
+        var cachedGraphJson = await dbContext.MapVersions
+            .AsNoTracking()
+            .Where(x => x.MapId == mapId && x.Id == versionId.Value)
+            .Select(x => x.GraphJson)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(cachedGraphJson))
+        {
+            var cached = TryDeserializeGraph(cachedGraphJson);
+            if (cached is not null)
+            {
+                return cached;
+            }
+        }
+
         var objects = await dbContext.TerrainObjects
             .AsNoTracking()
             .Include(x => x.TerrainObjectType)
             .Where(x => x.MapId == mapId && x.MapVersionId == versionId.Value)
             .ToListAsync(cancellationToken);
 
-        return engine.BuildGraph(objects, profile);
+        var builtGraph = engine.BuildGraph(objects, profile);
+        var mapVersion = await dbContext.MapVersions.FirstOrDefaultAsync(
+            x => x.MapId == mapId && x.Id == versionId.Value,
+            cancellationToken);
+        if (mapVersion is not null && string.IsNullOrWhiteSpace(mapVersion.GraphJson))
+        {
+            mapVersion.GraphJson = JsonSerializer.Serialize(builtGraph);
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        return builtGraph;
+    }
+
+    private static RouteGraphResponse? TryDeserializeGraph(string json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<RouteGraphResponse>(json);
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

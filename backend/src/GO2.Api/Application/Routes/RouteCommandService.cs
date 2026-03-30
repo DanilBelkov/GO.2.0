@@ -1,6 +1,7 @@
 using GO2.Api.Contracts;
 using GO2.Api.Data;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 
 namespace GO2.Api.Application.Routes;
 
@@ -69,16 +70,39 @@ public sealed class RouteCommandService(
 
             using var scope = serviceScopeFactory.CreateScope();
             var scopedDb = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var objects = await scopedDb.TerrainObjects
+            var cachedGraphJson = await scopedDb.MapVersions
                 .AsNoTracking()
-                .Include(x => x.TerrainObjectType)
-                .Where(x => x.MapId == mapId && x.MapVersionId == versionId)
-                .ToListAsync();
+                .Where(x => x.MapId == mapId && x.Id == versionId)
+                .Select(x => x.GraphJson)
+                .FirstOrDefaultAsync();
 
             await Task.Delay(300);
             state.Progress = 35;
 
-            var result = engine.Calculate(objects, request.Waypoints, request.Profile);
+            RouteCalculationResultDto result;
+            var cachedGraph = TryDeserializeGraph(cachedGraphJson);
+            if (cachedGraph is not null)
+            {
+                result = engine.CalculateFromGraph(cachedGraph, request.Waypoints, request.Profile);
+            }
+            else
+            {
+                var objects = await scopedDb.TerrainObjects
+                    .AsNoTracking()
+                    .Include(x => x.TerrainObjectType)
+                    .Where(x => x.MapId == mapId && x.MapVersionId == versionId)
+                    .ToListAsync();
+                var builtGraph = engine.BuildGraph(objects, request.Profile);
+                result = engine.CalculateFromGraph(builtGraph, request.Waypoints, request.Profile);
+
+                var mapVersion = await scopedDb.MapVersions.FirstOrDefaultAsync(x => x.MapId == mapId && x.Id == versionId);
+                if (mapVersion is not null && string.IsNullOrWhiteSpace(mapVersion.GraphJson))
+                {
+                    mapVersion.GraphJson = JsonSerializer.Serialize(builtGraph);
+                    await scopedDb.SaveChangesAsync();
+                }
+            }
+
             await Task.Delay(300);
             state.Progress = 80;
 
@@ -92,6 +116,23 @@ public sealed class RouteCommandService(
             logger.LogError(ex, "Ошибка route job {JobId}", jobId);
             state.Status = "failed";
             state.Error = ex.Message;
+        }
+    }
+
+    private static RouteGraphResponse? TryDeserializeGraph(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<RouteGraphResponse>(json);
+        }
+        catch
+        {
+            return null;
         }
     }
 }

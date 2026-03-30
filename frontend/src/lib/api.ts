@@ -6,11 +6,21 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:5299';
 async function request<T>(url: string, init: RequestInit = {}, retry = true): Promise<T> {
   const headers = new Headers(init.headers ?? {});
   const token = getAccessToken();
+  const method = (init.method ?? 'GET').toUpperCase();
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  const response = await fetch(`${API_BASE}${url}`, { ...init, headers });
+  if (method === 'GET') {
+    headers.set('Cache-Control', 'no-cache, no-store, max-age=0');
+    headers.set('Pragma', 'no-cache');
+  }
+
+  const response = await fetch(`${API_BASE}${url}`, {
+    ...init,
+    headers,
+    cache: method === 'GET' ? 'no-store' : init.cache,
+  });
   if (response.status === 401 && retry) {
     const refreshed = await tryRefresh();
     if (refreshed) {
@@ -50,6 +60,7 @@ async function tryRefresh(): Promise<boolean> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refreshToken }),
+    cache: 'no-store',
   });
 
   if (!response.ok) {
@@ -248,7 +259,10 @@ export async function getMapImageObjectUrl(mapId: string): Promise<string> {
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  const response = await fetch(`${API_BASE}/maps/${mapId}/image`, { headers });
+  const response = await fetch(`${API_BASE}/maps/${mapId}/image?ts=${Date.now()}`, {
+    headers,
+    cache: 'no-store',
+  });
   if (!response.ok) {
     throw new Error('Не удалось загрузить изображение карты');
   }
@@ -356,5 +370,6 @@ export async function getRouteGraph(
 
   query.set('timeWeight', String(profile.timeWeight));
   query.set('safetyWeight', String(profile.safetyWeight));
+  query.set('ts', String(Date.now()));
   return request<RouteGraph>(`/routes/graph/${mapId}?${query.toString()}`);
 }

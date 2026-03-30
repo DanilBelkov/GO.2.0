@@ -1,9 +1,11 @@
 using GO2.Api.Contracts;
+using GO2.Api.Application.Routes;
 using GO2.Api.Data;
 using GO2.Api.Models;
 using GO2.Api.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 
 namespace GO2.Api.Application.Maps;
 
@@ -12,12 +14,14 @@ public sealed class MapCommandService(
     AppDbContext dbContext,
     IFileStorage fileStorage,
     IOcdImportService ocdImportService,
+    RoutingEngineService routingEngine,
     IServiceScopeFactory serviceScopeFactory,
     ILogger<MapCommandService> logger) : IMapCommandService
 {
     private static readonly HashSet<string> AllowedContentTypes = ["image/png", "image/jpeg"];
     private static readonly HashSet<string> AllowedOcdExtensions = [".ocd"];
     private const long MaxFileSize = 20 * 1024 * 1024;
+    private static readonly RouteProfileDto DefaultGraphProfile = new() { TimeWeight = 0.6, SafetyWeight = 0.4 };
 
     public async Task<MapDetailsResponse> UploadAsync(Guid userId, IFormFile file, CancellationToken cancellationToken)
     {
@@ -123,9 +127,11 @@ public sealed class MapCommandService(
                 GeometryJson = x.GeometryJson,
                 Traversability = x.Traversability,
                 Source = TerrainObjectSource.Auto
-            });
+            }).ToList();
 
             dbContext.TerrainObjects.AddRange(entities);
+            var graph = routingEngine.BuildGraph(entities, DefaultGraphProfile);
+            version.GraphJson = JsonSerializer.Serialize(graph);
             await dbContext.SaveChangesAsync(cancellationToken);
         }
 
@@ -256,6 +262,8 @@ public sealed class MapCommandService(
         }).ToList();
 
         dbContext.TerrainObjects.AddRange(entities);
+        var graph = routingEngine.BuildGraph(entities, DefaultGraphProfile);
+        newVersion.GraphJson = JsonSerializer.Serialize(graph);
         map.Status = MapStatus.Edited;
         await dbContext.SaveChangesAsync(cancellationToken);
 
@@ -303,6 +311,12 @@ public sealed class MapCommandService(
                 .ToListAsync();
             scopedDbContext.TerrainObjects.RemoveRange(existing);
             scopedDbContext.TerrainObjects.AddRange(generatedObjects);
+            var graph = routingEngine.BuildGraph(generatedObjects, DefaultGraphProfile);
+            var mapVersion = await scopedDbContext.MapVersions.FirstOrDefaultAsync(x => x.Id == job.MapVersionId);
+            if (mapVersion is not null)
+            {
+                mapVersion.GraphJson = JsonSerializer.Serialize(graph);
+            }
 
             var map = await scopedDbContext.Maps.FirstOrDefaultAsync(x => x.Id == job.MapId);
             if (map is not null)

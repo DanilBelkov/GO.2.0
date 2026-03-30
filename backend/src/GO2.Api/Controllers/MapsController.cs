@@ -6,7 +6,6 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace GO2.Api.Controllers;
 
-// Тонкий maps-контроллер: только транспортный слой и маппинг ошибок.
 [ApiController]
 [Authorize]
 [Route("maps")]
