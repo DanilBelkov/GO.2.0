@@ -1,4 +1,4 @@
-namespace GO2.Api.Models;
+﻿namespace GO2.Api.Models;
 
 // Оцифрованный объект местности в конкретной версии карты.
 public sealed class TerrainObject
@@ -14,7 +14,7 @@ public sealed class TerrainObject
     public TerrainGeometryKind GeometryKind { get; set; }
     // Геометрия хранится в JSON, чтобы единообразно поддерживать point/line/polygon.
     public string GeometryJson { get; set; } = string.Empty;
-    public decimal Traversability { get; set; } = 1m;
+    public decimal Traversability { get; set; } = 50m;
     public TerrainObjectSource Source { get; set; } = TerrainObjectSource.Auto;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }

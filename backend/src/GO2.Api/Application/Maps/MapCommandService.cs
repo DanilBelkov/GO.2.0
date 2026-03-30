@@ -118,15 +118,73 @@ public sealed class MapCommandService(
 
         if (parsedObjects.Count > 0)
         {
-            var entities = parsedObjects.Select(x => new TerrainObject
+            var symbolCodes = parsedObjects
+                .Select(x => x.SymbolCode.Trim())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var knownTypes = await dbContext.TerrainObjectTypes
+                .Where(x =>
+                    symbolCodes.Contains(x.SymbolCode) &&
+                    (x.IsSystem || x.OwnerUserId == userId))
+                .ToListAsync(cancellationToken);
+
+            var typeBySymbol = knownTypes
+                .OrderByDescending(x => x.IsSystem)
+                .GroupBy(x => x.SymbolCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var imported in parsedObjects)
             {
-                MapId = map.Id,
-                MapVersionId = version.Id,
-                TerrainClass = x.TerrainClass,
-                GeometryKind = x.GeometryKind,
-                GeometryJson = x.GeometryJson,
-                Traversability = x.Traversability,
-                Source = TerrainObjectSource.Auto
+                var symbolCode = imported.SymbolCode.Trim();
+                if (string.IsNullOrWhiteSpace(symbolCode))
+                {
+                    continue;
+                }
+
+                if (typeBySymbol.ContainsKey(symbolCode))
+                {
+                    continue;
+                }
+
+                var customType = new TerrainObjectType
+                {
+                    OwnerUserId = userId,
+                    TerrainClass = imported.TerrainClass,
+                    SymbolCode = symbolCode,
+                    SymbolStyle = imported.SymbolStyle,
+                    Name = imported.SuggestedName,
+                    Color = "#9CA3AF",
+                    Icon = "scan-search",
+                    Traversability = imported.Traversability,
+                    Comment = "Создано автоматически при импорте OCAD: символ не найден в базовом каталоге.",
+                    IsSystem = false
+                };
+
+                dbContext.TerrainObjectTypes.Add(customType);
+                typeBySymbol[symbolCode] = customType;
+            }
+
+            await dbContext.SaveChangesAsync(cancellationToken);
+
+            var entities = parsedObjects.Select(x =>
+            {
+                var resolvedType = !string.IsNullOrWhiteSpace(x.SymbolCode) && typeBySymbol.TryGetValue(x.SymbolCode, out var found)
+                    ? found
+                    : null;
+
+                return new TerrainObject
+                {
+                    MapId = map.Id,
+                    MapVersionId = version.Id,
+                    TerrainClass = resolvedType?.TerrainClass ?? x.TerrainClass,
+                    TerrainObjectTypeId = resolvedType?.Id,
+                    GeometryKind = x.GeometryKind,
+                    GeometryJson = x.GeometryJson,
+                    Traversability = resolvedType?.Traversability ?? x.Traversability,
+                    Source = TerrainObjectSource.Auto
+                };
             }).ToList();
 
             dbContext.TerrainObjects.AddRange(entities);
@@ -252,7 +310,7 @@ public sealed class MapCommandService(
             {
                 MapId = mapId,
                 MapVersionId = newVersion.Id,
-                TerrainClass = x.TerrainClass,
+                TerrainClass = resolvedType?.TerrainClass ?? x.TerrainClass,
                 TerrainObjectTypeId = resolvedType?.Id,
                 GeometryKind = x.GeometryKind,
                 GeometryJson = x.GeometryJson,

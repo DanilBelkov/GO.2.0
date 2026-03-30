@@ -1,13 +1,33 @@
-namespace GO2.Api.Models;
+﻿namespace GO2.Api.Models;
 
-// Семантический класс местности для оцифровки и дальнейшей маршрутизации.
+// Класс условного знака (основные и дополнительные классы ориентирования).
 public enum TerrainClass
 {
     Vegetation = 0,
-    Water = 1,
-    Rock = 2,
-    Ground = 3,
-    ManMade = 4
+    Hydrography = 1,
+    RocksAndStones = 2,
+    Relief = 3,
+    ManMade = 4,
+    CourseMarkings = 5,
+    SkiTrackMarkings = 6,
+    TechnicalSymbols = 7
+}
+
+public static class TerrainClassExtensions
+{
+    public static string GetRussianName(this TerrainClass terrainClass) =>
+        terrainClass switch
+        {
+            TerrainClass.Vegetation => "Растительность",
+            TerrainClass.Hydrography => "Гидрография",
+            TerrainClass.RocksAndStones => "Скалы и камни",
+            TerrainClass.Relief => "Рельеф",
+            TerrainClass.ManMade => "Искусственные объекты",
+            TerrainClass.CourseMarkings => "Обозначения дистанции",
+            TerrainClass.SkiTrackMarkings => "Обозначения лыжней",
+            TerrainClass.TechnicalSymbols => "Технические символы",
+            _ => "Неизвестный класс"
+        };
 }
 
 // Поддерживаемые геометрии в редакторе MVP.

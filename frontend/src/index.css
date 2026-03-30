@@ -258,6 +258,37 @@ td {
   align-items: center;
 }
 
+.types-icons-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.icon-chip {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid #364559;
+  background: #10161f;
+  color: #e4e7eb;
+  padding: 0;
+}
+
+.icon-chip img {
+  display: block;
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+}
+
+.icon-chip.active {
+  border-color: #ff6b35;
+  box-shadow: 0 0 0 1px #ff6b35 inset;
+}
+
 .types-actions {
   display: inline-flex;
   gap: 5px;

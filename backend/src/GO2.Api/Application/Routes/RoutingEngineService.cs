@@ -451,7 +451,7 @@ public sealed class RoutingEngineService
             var minCellY = Math.Max(0, (int)Math.Floor((minY - bounds.MinY) / cellSize));
             var maxCellY = Math.Min(costs.GetLength(1) - 1, (int)Math.Ceiling((maxY - bounds.MinY) / cellSize));
 
-            var isImpassable = area.Traversability <= 0.05m;
+            var isImpassable = area.Traversability <= 0m;
             var areaCost = BuildSurfaceCost(area, profile);
 
             for (var x = minCellX; x <= maxCellX; x++)
@@ -490,7 +490,7 @@ public sealed class RoutingEngineService
     {
         foreach (var line in lines)
         {
-            if (line.Points.Count < 2 || line.Traversability <= 0.05m)
+            if (line.Points.Count < 2 || line.Traversability <= 0m)
             {
                 continue;
             }
@@ -579,14 +579,17 @@ public sealed class RoutingEngineService
         var traversability = (double)obj.Traversability;
         var terrainRisk = obj.TerrainClass switch
         {
-            TerrainClass.Water => 2.2,
-            TerrainClass.Rock => 1.7,
+            TerrainClass.Hydrography => 2.2,
+            TerrainClass.RocksAndStones => 1.7,
             TerrainClass.Vegetation => 1.25,
             TerrainClass.ManMade => 1.1,
+            TerrainClass.SkiTrackMarkings => 0.9,
+            TerrainClass.CourseMarkings => 1.0,
+            TerrainClass.TechnicalSymbols => 1.0,
             _ => 1.0
         };
 
-        var movementPenalty = Math.Clamp(1.0 / Math.Max(0.05, traversability), 0.2, 10.0);
+        var movementPenalty = Math.Clamp(100.0 / Math.Max(1.0, traversability), 0.2, 100.0);
         return profile.TimeWeight * movementPenalty + profile.SafetyWeight * terrainRisk;
     }
 

@@ -134,6 +134,9 @@ public sealed class OcdImportService : IOcdImportService
         }
 
         var terrainClass = ResolveTerrainClass(symbol, objectType);
+        var symbolCode = ResolveSymbolCode(symbol);
+        var symbolStyle = ResolveSymbolStyle(objectType);
+        var suggestedName = $"Пользовательский символ {symbolCode}";
         switch (objectType)
         {
             case 1: // point
@@ -142,6 +145,9 @@ public sealed class OcdImportService : IOcdImportService
                 output.Add(new OcdImportedObject
                 {
                     TerrainClass = terrainClass,
+                    SymbolCode = symbolCode,
+                    SymbolStyle = symbolStyle,
+                    SuggestedName = suggestedName,
                     GeometryKind = TerrainGeometryKind.Point,
                     GeometryJson = BuildPointJson(points[0]),
                     Traversability = ResolveTraversability(terrainClass)
@@ -155,6 +161,9 @@ public sealed class OcdImportService : IOcdImportService
                     output.Add(new OcdImportedObject
                     {
                         TerrainClass = terrainClass,
+                        SymbolCode = symbolCode,
+                        SymbolStyle = symbolStyle,
+                        SuggestedName = suggestedName,
                         GeometryKind = TerrainGeometryKind.Line,
                         GeometryJson = BuildLineJson(points),
                         Traversability = ResolveTraversability(terrainClass)
@@ -174,6 +183,9 @@ public sealed class OcdImportService : IOcdImportService
                     output.Add(new OcdImportedObject
                     {
                         TerrainClass = terrainClass,
+                        SymbolCode = symbolCode,
+                        SymbolStyle = symbolStyle,
+                        SuggestedName = suggestedName,
                         GeometryKind = TerrainGeometryKind.Polygon,
                         GeometryJson = BuildPolygonJson(ring),
                         Traversability = ResolveTraversability(terrainClass)
@@ -188,6 +200,9 @@ public sealed class OcdImportService : IOcdImportService
                     output.Add(new OcdImportedObject
                     {
                         TerrainClass = terrainClass,
+                        SymbolCode = symbolCode,
+                        SymbolStyle = symbolStyle,
+                        SuggestedName = suggestedName,
                         GeometryKind = TerrainGeometryKind.Polygon,
                         GeometryJson = BuildPolygonJson(rectangle),
                         Traversability = ResolveTraversability(terrainClass)
@@ -201,6 +216,9 @@ public sealed class OcdImportService : IOcdImportService
                 output.Add(new OcdImportedObject
                 {
                     TerrainClass = terrainClass,
+                    SymbolCode = symbolCode,
+                    SymbolStyle = symbolStyle,
+                    SuggestedName = suggestedName,
                     GeometryKind = TerrainGeometryKind.Point,
                     GeometryJson = BuildPointJson(points[0]),
                     Traversability = ResolveTraversability(terrainClass)
@@ -264,23 +282,23 @@ public sealed class OcdImportService : IOcdImportService
 
     private static TerrainClass ResolveTerrainClass(int symbol, byte objectType)
     {
-        if (objectType is 4 or 5 or 6 or 7)
-        {
-            return TerrainClass.ManMade;
-        }
-
         var sym = Math.Abs(symbol) / 1000;
-        if (sym is >= 300 and < 400)
+        if (sym is >= 700 and < 800)
         {
-            return TerrainClass.Water;
+            return TerrainClass.CourseMarkings;
         }
 
-        if (sym is >= 200 and < 300)
+        if (sym is >= 800 and < 900)
         {
-            return TerrainClass.Rock;
+            return TerrainClass.SkiTrackMarkings;
         }
 
-        if (sym is >= 500 and < 800)
+        if (sym is >= 600 and < 700)
+        {
+            return TerrainClass.TechnicalSymbols;
+        }
+
+        if (sym is >= 500 and < 600)
         {
             return TerrainClass.ManMade;
         }
@@ -290,17 +308,49 @@ public sealed class OcdImportService : IOcdImportService
             return TerrainClass.Vegetation;
         }
 
-        return TerrainClass.Ground;
+        if (sym is >= 300 and < 400)
+        {
+            return TerrainClass.Hydrography;
+        }
+
+        if (sym is >= 200 and < 300)
+        {
+            return TerrainClass.RocksAndStones;
+        }
+
+        return TerrainClass.Relief;
     }
 
     private static decimal ResolveTraversability(TerrainClass terrainClass) =>
         terrainClass switch
         {
-            TerrainClass.Water => 3m,
-            TerrainClass.Rock => 1.8m,
-            TerrainClass.Vegetation => 1.4m,
-            TerrainClass.ManMade => 0.9m,
-            _ => 1m
+            TerrainClass.Hydrography => 25m,
+            TerrainClass.RocksAndStones => 45m,
+            TerrainClass.Vegetation => 55m,
+            TerrainClass.ManMade => 70m,
+            TerrainClass.CourseMarkings => 100m,
+            TerrainClass.SkiTrackMarkings => 95m,
+            TerrainClass.TechnicalSymbols => 100m,
+            _ => 65m
+        };
+
+    private static string ResolveSymbolCode(int symbol)
+    {
+        var sym = Math.Abs(symbol) / 1000;
+        return sym <= 0 ? "unknown" : sym.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static string ResolveSymbolStyle(byte objectType) =>
+        objectType switch
+        {
+            1 => "point",
+            2 => "line",
+            3 => "area",
+            4 => "text",
+            5 => "text",
+            6 => "line-text",
+            7 => "rectangle",
+            _ => "unknown"
         };
 
     private static string BuildPointJson(OcdPoint point)

@@ -101,18 +101,39 @@ export type MapVersion = {
 };
 
 // Контракты домена оцифровки/редактора.
-export type TerrainClass = 'Vegetation' | 'Water' | 'Rock' | 'Ground' | 'ManMade';
+export type TerrainClass =
+  | 'Vegetation'
+  | 'Hydrography'
+  | 'RocksAndStones'
+  | 'Relief'
+  | 'ManMade'
+  | 'CourseMarkings'
+  | 'SkiTrackMarkings'
+  | 'TechnicalSymbols';
 export type TerrainGeometryKind = 'Point' | 'Line' | 'Polygon';
 export type TerrainObjectSource = 'Auto' | 'Manual';
 
 export type TerrainType = {
   id: string;
+  terrainClass: TerrainClass;
+  terrainClassNameRu: string;
+  symbolCode: string;
+  symbolStyle: string;
   name: string;
   color: string;
   icon: string;
   traversability: number;
   comment: string;
   isSystem: boolean;
+};
+
+export type UpsertTerrainTypePayload = {
+  terrainClass: TerrainClass;
+  name: string;
+  color: string;
+  icon: string;
+  traversability: number;
+  comment: string;
 };
 
 export type TerrainObject = {
@@ -313,7 +334,7 @@ export async function getTerrainTypes(): Promise<TerrainType[]> {
   return request<TerrainType[]>('/terrain-types');
 }
 
-export async function createTerrainType(payload: Omit<TerrainType, 'id' | 'isSystem'>): Promise<TerrainType> {
+export async function createTerrainType(payload: UpsertTerrainTypePayload): Promise<TerrainType> {
   return request<TerrainType>('/terrain-types', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -323,7 +344,7 @@ export async function createTerrainType(payload: Omit<TerrainType, 'id' | 'isSys
 
 export async function updateTerrainType(
   id: string,
-  payload: Omit<TerrainType, 'id' | 'isSystem'>,
+  payload: UpsertTerrainTypePayload,
 ): Promise<TerrainType> {
   return request<TerrainType>(`/terrain-types/${id}`, {
     method: 'PUT',

@@ -14,9 +14,9 @@ public sealed class DigitizationPipelineService : IDigitizationPipelineService
     private static readonly TerrainClass[] Classes =
     [
         TerrainClass.Vegetation,
-        TerrainClass.Water,
-        TerrainClass.Rock,
-        TerrainClass.Ground,
+        TerrainClass.Hydrography,
+        TerrainClass.RocksAndStones,
+        TerrainClass.Relief,
         TerrainClass.ManMade
     ];
 
@@ -37,7 +37,7 @@ public sealed class DigitizationPipelineService : IDigitizationPipelineService
                 TerrainClass = Classes[i],
                 GeometryKind = TerrainGeometryKind.Point,
                 GeometryJson = $"{{\"x\":{80 + i * 70},\"y\":{80 + i * 60}}}",
-                Traversability = decimal.Round((decimal)(0.5 + random.NextDouble() * 1.5), 2),
+                Traversability = decimal.Round((decimal)(20 + random.NextDouble() * 70), 2),
                 Source = TerrainObjectSource.Auto
             });
 
@@ -49,7 +49,7 @@ public sealed class DigitizationPipelineService : IDigitizationPipelineService
                 GeometryKind = TerrainGeometryKind.Line,
                 GeometryJson =
                     $"{{\"points\":[{{\"x\":{120 + i * 40},\"y\":{210 + i * 20}}},{{\"x\":{250 + i * 35},\"y\":{170 + i * 18}}},{{\"x\":{380 + i * 20},\"y\":{230 + i * 15}}}]}}",
-                Traversability = decimal.Round((decimal)(0.5 + random.NextDouble() * 1.5), 2),
+                Traversability = decimal.Round((decimal)(20 + random.NextDouble() * 70), 2),
                 Source = TerrainObjectSource.Auto
             });
 
@@ -61,7 +61,7 @@ public sealed class DigitizationPipelineService : IDigitizationPipelineService
                 GeometryKind = TerrainGeometryKind.Polygon,
                 GeometryJson =
                     $"{{\"points\":[{{\"x\":{280 + i * 30},\"y\":{300 + i * 12}}},{{\"x\":{340 + i * 25},\"y\":{350 + i * 10}}},{{\"x\":{300 + i * 20},\"y\":{410 + i * 10}}},{{\"x\":{240 + i * 15},\"y\":{370 + i * 12}}}]}}",
-                Traversability = decimal.Round((decimal)(0.5 + random.NextDouble() * 1.5), 2),
+                Traversability = decimal.Round((decimal)(20 + random.NextDouble() * 70), 2),
                 Source = TerrainObjectSource.Auto
             });
         }

@@ -1,4 +1,4 @@
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 using GO2.Api.Models;
 
 namespace GO2.Api.Contracts;
@@ -7,6 +7,10 @@ namespace GO2.Api.Contracts;
 public sealed class TerrainTypeResponse
 {
     public Guid Id { get; set; }
+    public TerrainClass TerrainClass { get; set; }
+    public string TerrainClassNameRu { get; set; } = string.Empty;
+    public string SymbolCode { get; set; } = string.Empty;
+    public string SymbolStyle { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Color { get; set; } = string.Empty;
     public string Icon { get; set; } = string.Empty;
@@ -18,6 +22,8 @@ public sealed class TerrainTypeResponse
 // DTO создания/обновления пользовательского типа местности.
 public sealed class UpsertTerrainTypeRequest
 {
+    public TerrainClass TerrainClass { get; set; } = TerrainClass.ManMade;
+
     [Required]
     [MaxLength(120)]
     public string Name { get; set; } = string.Empty;
@@ -29,8 +35,8 @@ public sealed class UpsertTerrainTypeRequest
     [MaxLength(64)]
     public string Icon { get; set; } = string.Empty;
 
-    [Range(0.05, 10)]
-    public decimal Traversability { get; set; } = 1m;
+    [Range(0, 100)]
+    public decimal Traversability { get; set; } = 50m;
 
     [MaxLength(500)]
     public string Comment { get; set; } = string.Empty;
@@ -59,8 +65,8 @@ public sealed class UpsertTerrainObjectRequest
     [Required]
     public string GeometryJson { get; set; } = string.Empty;
 
-    [Range(0.05, 10)]
-    public decimal Traversability { get; set; } = 1m;
+    [Range(0, 100)]
+    public decimal Traversability { get; set; } = 50m;
 }
 
 // Пакетное сохранение всех объектов редактора в новую версию карты.

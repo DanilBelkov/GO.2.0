@@ -61,6 +61,46 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasIndex(x => new { x.OwnerUserId, x.Name })
             .IsUnique();
 
+        modelBuilder.Entity<TerrainObjectType>()
+            .HasIndex(x => new { x.OwnerUserId, x.SymbolCode })
+            .IsUnique()
+            .HasFilter("\"SymbolCode\" <> ''");
+
+        modelBuilder.Entity<TerrainObjectType>()
+            .HasIndex(x => x.SymbolCode)
+            .IsUnique()
+            .HasFilter("\"IsSystem\" = true AND \"SymbolCode\" <> ''");
+
+        modelBuilder.Entity<TerrainObjectType>()
+            .Property(x => x.SymbolCode)
+            .HasMaxLength(32);
+
+        modelBuilder.Entity<TerrainObjectType>()
+            .Property(x => x.SymbolStyle)
+            .HasMaxLength(24);
+
+        modelBuilder.Entity<TerrainObjectType>()
+            .Property(x => x.Name)
+            .HasMaxLength(120);
+
+        modelBuilder.Entity<TerrainObjectType>()
+            .Property(x => x.Icon)
+            .HasMaxLength(64);
+
+        modelBuilder.Entity<TerrainObjectType>()
+            .Property(x => x.Color)
+            .HasMaxLength(16);
+
+        modelBuilder.Entity<TerrainObjectType>()
+            .Property(x => x.Comment)
+            .HasMaxLength(500);
+
+        modelBuilder.Entity<TerrainObjectType>()
+            .HasCheckConstraint("CK_TerrainObjectType_Traversability_0_100", "\"Traversability\" >= 0 AND \"Traversability\" <= 100");
+
+        modelBuilder.Entity<TerrainObject>()
+            .HasCheckConstraint("CK_TerrainObject_Traversability_0_100", "\"Traversability\" >= 0 AND \"Traversability\" <= 100");
+
         modelBuilder.Entity<DigitizationJob>()
             .HasOne(x => x.Map)
             .WithMany()

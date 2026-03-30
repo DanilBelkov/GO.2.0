@@ -23,6 +23,7 @@ import {
   uploadMap,
   uploadOcdMap,
 } from '../lib/api';
+import { getTerrainTypeImageUrl } from '../lib/terrainSymbolImages';
 import type {
   DigitizationJob,
   MapDetails,
@@ -72,15 +73,36 @@ const OBJECT_STROKE_WIDTH = 0.4;
 const OBJECT_STROKE_WIDTH_SELECTED = 0.8;
 const VERTEX_RADIUS = 1.5;
 
-const CLASS_OPTIONS: TerrainClass[] = ['Vegetation', 'Water', 'Rock', 'Ground', 'ManMade'];
+const CLASS_OPTIONS: TerrainClass[] = [
+  'Vegetation',
+  'Hydrography',
+  'Relief',
+  'ManMade',
+  'RocksAndStones',
+  'CourseMarkings',
+  'SkiTrackMarkings',
+  'TechnicalSymbols',
+];
+const CLASS_LABELS_RU: Record<TerrainClass, string> = {
+  Vegetation: 'Растительность',
+  Hydrography: 'Гидрография',
+  Relief: 'Рельеф',
+  ManMade: 'Искусственные объекты',
+  RocksAndStones: 'Скалы и камни',
+  CourseMarkings: 'Обозначения дистанции',
+  SkiTrackMarkings: 'Обозначения лыжней',
+  TechnicalSymbols: 'Технические символы',
+};
 const OBJECT_COLORS: Record<TerrainClass, string> = {
   Vegetation: '#34D399',
-  Water: '#60A5FA',
-  Rock: '#9CA3AF',
-  Ground: '#FBBF24',
+  Hydrography: '#60A5FA',
+  Relief: '#FBBF24',
   ManMade: '#FB7185',
+  RocksAndStones: '#9CA3AF',
+  CourseMarkings: '#A855F7',
+  SkiTrackMarkings: '#16A34A',
+  TechnicalSymbols: '#0EA5E9',
 };
-
 // Полноценная рабочая страница: карты, редактор объектов, маршрутизация, история и экспорт UI.
 export function MapsPage() {
   const navigate = useNavigate();
@@ -118,7 +140,8 @@ export function MapsPage() {
   const [editingTypeId, setEditingTypeId] = useState<string | null>(null);
   const [typeFormName, setTypeFormName] = useState('');
   const [typeFormColor, setTypeFormColor] = useState('#22c55e');
-  const [typeFormTraversability, setTypeFormTraversability] = useState(1);
+  const [typeFormTraversability, setTypeFormTraversability] = useState(50);
+  const [typeFormClass, setTypeFormClass] = useState<TerrainClass>('ManMade');
   const [typeFormComment, setTypeFormComment] = useState('');
 
   const [image, setImage] = useState<HTMLImageElement | null>(null);
@@ -142,6 +165,10 @@ export function MapsPage() {
   const terrainTypeById = useMemo(
     () => new Map(terrainTypes.map((type) => [type.id, type])),
     [terrainTypes],
+  );
+  const terrainTypesForSelectedClass = useMemo(
+    () => terrainTypes.filter((t) => t.terrainClass === selectedObject?.terrainClass),
+    [terrainTypes, selectedObject?.terrainClass],
   );
 
   const graphNodeById = useMemo(
@@ -450,9 +477,9 @@ export function MapsPage() {
         {
           id: crypto.randomUUID(),
           geometryKind: 'Point',
-          terrainClass: 'Ground',
+          terrainClass: 'Relief',
           terrainObjectTypeId: null,
-          traversability: 1,
+          traversability: 50,
           points: [p],
           source: 'Manual',
         },
@@ -480,9 +507,9 @@ export function MapsPage() {
       {
         id: crypto.randomUUID(),
         geometryKind: tool === 'line' ? 'Line' : 'Polygon',
-        terrainClass: 'Ground',
+        terrainClass: 'Relief',
         terrainObjectTypeId: null,
-        traversability: 1,
+        traversability: 50,
         points: draftPoints,
         source: 'Manual',
       },
@@ -596,7 +623,8 @@ export function MapsPage() {
   function resetTypeForm() {
     setTypeFormName('');
     setTypeFormColor('#22c55e');
-    setTypeFormTraversability(1);
+    setTypeFormTraversability(50);
+    setTypeFormClass('ManMade');
     setTypeFormComment('');
   }
 
@@ -611,6 +639,7 @@ export function MapsPage() {
     setTypeFormName(type.name);
     setTypeFormColor(type.color);
     setTypeFormTraversability(type.traversability);
+    setTypeFormClass(type.terrainClass);
     setTypeFormComment(type.comment ?? '');
     setTypeModalOpen(true);
   }
@@ -627,14 +656,15 @@ export function MapsPage() {
       return;
     }
 
-    if (Number.isNaN(typeFormTraversability) || typeFormTraversability < 0.05 || typeFormTraversability > 10) {
-      setError('Проходимость должна быть в диапазоне 0.05-10');
+    if (Number.isNaN(typeFormTraversability) || typeFormTraversability < 0 || typeFormTraversability > 100) {
+      setError('Проходимость должна быть в диапазоне 0-100');
       return;
     }
 
     if (!editingTypeId) {
       try {
         const created = await createTerrainType({
+          terrainClass: typeFormClass,
           name,
           color: typeFormColor,
           icon: 'custom',
@@ -658,6 +688,7 @@ export function MapsPage() {
 
     try {
       const updated = await updateTerrainType(existingType.id, {
+        terrainClass: typeFormClass,
         name,
         color: typeFormColor,
         icon: existingType.icon,
@@ -972,31 +1003,68 @@ export function MapsPage() {
                 {selectedObject && (
                   <div className="side-group">
                     <label>Класс
-                      <select value={selectedObject.terrainClass} onChange={(e) => updateObject(selectedObject.id, (x) => ({ ...x, terrainClass: e.target.value as TerrainClass }))}>
-                        {CLASS_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                    </label>
-                    <label>Тип
                       <select
-                        value={selectedObject.terrainObjectTypeId ?? ''}
+                        value={selectedObject.terrainClass}
                         onChange={(e) =>
                           updateObject(selectedObject.id, (x) => {
-                            const typeId = e.target.value || null;
-                            const type = typeId ? terrainTypeById.get(typeId) : null;
+                            const nextClass = e.target.value as TerrainClass;
+                            const selectedType = x.terrainObjectTypeId ? terrainTypeById.get(x.terrainObjectTypeId) : null;
                             return {
                               ...x,
-                              terrainObjectTypeId: typeId,
-                              traversability: type ? type.traversability : x.traversability,
+                              terrainClass: nextClass,
+                              terrainObjectTypeId: selectedType && selectedType.terrainClass !== nextClass ? null : x.terrainObjectTypeId,
                             };
                           })
                         }
                       >
-                        <option value="">Не задан</option>
-                        {terrainTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                        {CLASS_OPTIONS.map((c) => <option key={c} value={c}>{CLASS_LABELS_RU[c]}</option>)}
                       </select>
                     </label>
+                    <label>Тип
+                      <div className="types-icons-grid">
+                        <button
+                          type="button"
+                          className={selectedObject.terrainObjectTypeId === null ? 'icon-chip active' : 'icon-chip'}
+                          title="Тип не задан"
+                          onClick={() =>
+                            updateObject(selectedObject.id, (x) => ({
+                              ...x,
+                              terrainObjectTypeId: null,
+                            }))
+                          }
+                        >
+                          ∅
+                        </button>
+                        {terrainTypesForSelectedClass.map((t) => {
+                          const imageUrl = getTerrainTypeImageUrl(t);
+                          const isActive = selectedObject.terrainObjectTypeId === t.id;
+                          return (
+                            <button
+                              key={t.id}
+                              type="button"
+                              className={isActive ? 'icon-chip active' : 'icon-chip'}
+                              title={`${t.name} (${t.terrainClassNameRu})`}
+                              onClick={() =>
+                                updateObject(selectedObject.id, (x) => ({
+                                  ...x,
+                                  terrainClass: t.terrainClass,
+                                  terrainObjectTypeId: t.id,
+                                  traversability: t.traversability,
+                                }))
+                              }
+                            >
+                              {imageUrl ? (
+                                <img src={imageUrl} alt={t.name} width={22} height={22} loading="lazy" />
+                              ) : (
+                                <span>{t.symbolCode || 'USR'}</span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </label>
                     <label>Проходимость
-                      <input type="number" min={0.05} max={10} step={0.05} value={selectedObject.traversability} onChange={(e) => updateObject(selectedObject.id, (x) => ({ ...x, traversability: Number(e.target.value) }))} />
+                      <input type="number" min={0} max={100} step={1} value={selectedObject.traversability} onChange={(e) => updateObject(selectedObject.id, (x) => ({ ...x, traversability: Number(e.target.value) }))} />
                     </label>
                     <button onClick={() => pushHistory(objects.filter((x) => x.id !== selectedObject.id))}>Удалить объект</button>
                   </div>
@@ -1007,7 +1075,16 @@ export function MapsPage() {
                   <button onClick={openCreateTypeModal}>+ Добавить тип</button>
                   {terrainTypes.map((t) => (
                     <div key={t.id} className="types-actions">
-                      <span style={{ color: t.color }}>{t.name}</span>
+                      <span
+                        style={{ color: t.color, fontSize: 18, lineHeight: 1 }}
+                        title={`${t.name} (${t.terrainClassNameRu}) • код ${t.symbolCode || 'USR'}`}
+                      >
+                        {getTerrainTypeImageUrl(t) ? (
+                          <img src={getTerrainTypeImageUrl(t) ?? ''} alt={t.name} width={20} height={20} loading="lazy" />
+                        ) : (
+                          t.symbolCode || 'USR'
+                        )}
+                      </span>
                       {!t.isSystem && <button onClick={() => openEditTypeModal(t)}>Изм.</button>}
                       {!t.isSystem && <button onClick={() => removeTerrainType(t.id)}>Уд.</button>}
                     </div>
@@ -1054,15 +1131,20 @@ export function MapsPage() {
             <label>Название
               <input value={typeFormName} onChange={(e) => setTypeFormName(e.target.value)} placeholder="Например, Болото" />
             </label>
+            <label>Класс
+              <select value={typeFormClass} onChange={(e) => setTypeFormClass(e.target.value as TerrainClass)}>
+                {CLASS_OPTIONS.map((c) => <option key={c} value={c}>{CLASS_LABELS_RU[c]}</option>)}
+              </select>
+            </label>
             <label>Цвет
               <input type="color" value={typeFormColor} onChange={(e) => setTypeFormColor(e.target.value)} />
             </label>
             <label>Проходимость
               <input
                 type="number"
-                min={0.05}
-                max={10}
-                step={0.05}
+                min={0}
+                max={100}
+                step={1}
                 value={typeFormTraversability}
                 onChange={(e) => setTypeFormTraversability(Number(e.target.value))}
               />

@@ -21,6 +21,9 @@ public sealed class TerrainTypeCommandService(AppDbContext dbContext) : ITerrain
         var entity = new TerrainObjectType
         {
             OwnerUserId = userId,
+            TerrainClass = request.TerrainClass,
+            SymbolCode = string.Empty,
+            SymbolStyle = "custom",
             Name = normalizedName,
             Color = request.Color.Trim(),
             Icon = request.Icon.Trim(),
@@ -48,6 +51,7 @@ public sealed class TerrainTypeCommandService(AppDbContext dbContext) : ITerrain
         }
 
         entity.Name = request.Name.Trim();
+        entity.TerrainClass = request.TerrainClass;
         entity.Color = request.Color.Trim();
         entity.Icon = request.Icon.Trim();
         entity.Traversability = request.Traversability;
@@ -75,6 +79,10 @@ public sealed class TerrainTypeCommandService(AppDbContext dbContext) : ITerrain
         return new TerrainTypeResponse
         {
             Id = entity.Id,
+            TerrainClass = entity.TerrainClass,
+            TerrainClassNameRu = entity.TerrainClass.GetRussianName(),
+            SymbolCode = entity.SymbolCode,
+            SymbolStyle = entity.SymbolStyle,
             Name = entity.Name,
             Color = entity.Color,
             Icon = entity.Icon,
