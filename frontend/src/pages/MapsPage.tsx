@@ -64,11 +64,11 @@ type RouteRun = {
 
 const CANVAS_WIDTH = 900;
 const CANVAS_HEIGHT = 560;
-const POINT_RADIUS = 3;
-const POINT_RADIUS_SELECTED = 4;
-const OBJECT_STROKE_WIDTH = 1.4;
-const OBJECT_STROKE_WIDTH_SELECTED = 2.2;
-const VERTEX_RADIUS = 3;
+const POINT_RADIUS = 1;
+const POINT_RADIUS_SELECTED = 2;
+const OBJECT_STROKE_WIDTH = 0.4;
+const OBJECT_STROKE_WIDTH_SELECTED = 0.8;
+const VERTEX_RADIUS = 1.5;
 
 const CLASS_OPTIONS: TerrainClass[] = ['Vegetation', 'Water', 'Rock', 'Ground', 'ManMade'];
 const OBJECT_COLORS: Record<TerrainClass, string> = {
@@ -865,7 +865,7 @@ export function MapsPage() {
               {layerRoute && <Layer>
                 {routePoints.map((p, i) => {
                   const canvasPoint = worldToCanvas(p);
-                  return <Circle key={`rp-${i}`} x={canvasPoint.x} y={canvasPoint.y} radius={3.5} fill="#f97316" />;
+                  return <Circle key={`rp-${i}`} x={canvasPoint.x} y={canvasPoint.y} radius={POINT_RADIUS_SELECTED} fill="#f97316" />;
                 })}
                 {routeVariants.map((r, i) => (
                   <Line
@@ -875,7 +875,7 @@ export function MapsPage() {
                       return [canvasPoint.x, canvasPoint.y];
                     })}
                     stroke={['#f43f5e', '#f97316', '#22c55e'][i]}
-                    strokeWidth={selectedRoute?.rank === r.rank ? 2.5 : 1.6}
+                    strokeWidth={selectedRoute?.rank === r.rank ? OBJECT_STROKE_WIDTH_SELECTED : OBJECT_STROKE_WIDTH}
                     opacity={selectedRoute?.rank === r.rank ? 1 : 0.6}
                   />
                 ))}
