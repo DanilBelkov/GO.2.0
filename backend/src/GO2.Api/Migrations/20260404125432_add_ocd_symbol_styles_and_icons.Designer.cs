@@ -3,6 +3,7 @@ using System;
 using GO2.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace GO2.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260404125432_add_ocd_symbol_styles_and_icons")]
+    partial class add_ocd_symbol_styles_and_icons
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -277,12 +280,12 @@ namespace GO2.Api.Migrations
                         .IsUnique()
                         .HasFilter("\"IsSystem\" = true AND \"SymbolCode\" <> ''");
 
+                    b.HasIndex("OwnerUserId", "Name")
+                        .IsUnique();
+
                     b.HasIndex("OwnerUserId", "SymbolCode")
                         .IsUnique()
                         .HasFilter("\"SymbolCode\" <> ''");
-
-                    b.HasIndex("OwnerUserId", "Name", "SymbolCode")
-                        .IsUnique();
 
                     b.ToTable("TerrainObjectTypes", t =>
                         {

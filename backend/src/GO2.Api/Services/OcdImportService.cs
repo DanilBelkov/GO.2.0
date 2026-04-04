@@ -1,4 +1,6 @@
-using System.Globalization;
+﻿using System.Globalization;
+using System.Text;
+using System.Text.Json;
 using GO2.Api.Models;
 
 namespace GO2.Api.Services;
@@ -6,12 +8,18 @@ namespace GO2.Api.Services;
 public sealed class OcdImportService : IOcdImportService
 {
     private const ushort OcadSignature = 0x0CAD;
+    private const int SymbolIndexBlockSize = 1028;
     private const int ObjectIndexBlockSize = 10296;
     private const int ObjectIndexEntrySize = 40;
     private const int Ocad9ObjectHeaderSize = 40;
     private const int Ocad12ObjectHeaderSize = 56;
 
     public IReadOnlyCollection<OcdImportedObject> Parse(byte[] fileBytes)
+    {
+        return ParseDetailed(fileBytes).Objects;
+    }
+
+    public OcdImportResult ParseDetailed(byte[] fileBytes)
     {
         var reader = new BinaryReaderLE(fileBytes);
         if (reader.Length < 48)
@@ -26,12 +34,33 @@ public sealed class OcdImportService : IOcdImportService
         }
 
         var version = reader.ReadInt16(4);
+        var firstSymbolIndexBlockPos = reader.ReadInt32(8);
         var objectIndexBlockPos = reader.ReadInt32(12);
         if (objectIndexBlockPos <= 0 || objectIndexBlockPos >= reader.Length)
         {
             throw new InvalidOperationException("OCD_PARSE_FAILED");
         }
 
+        var symbols = ParseSymbols(reader, firstSymbolIndexBlockPos);
+        var parsedObjects = ParseObjects(reader, version, objectIndexBlockPos);
+
+        if (parsedObjects.Count == 0)
+        {
+            throw new InvalidOperationException("OCD_PARSE_FAILED");
+        }
+
+        return new OcdImportResult
+        {
+            Objects = parsedObjects,
+            Symbols = symbols
+        };
+    }
+
+    private static IReadOnlyCollection<OcdImportedObject> ParseObjects(
+        BinaryReaderLE reader,
+        short version,
+        int objectIndexBlockPos)
+    {
         var parsed = new List<OcdImportedObject>(capacity: 4096);
         var visitedBlocks = new HashSet<int>();
         var blockPos = objectIndexBlockPos;
@@ -68,12 +97,115 @@ public sealed class OcdImportService : IOcdImportService
             blockPos = nextBlock;
         }
 
-        if (parsed.Count == 0)
+        return parsed;
+    }
+
+    private static IReadOnlyCollection<OcdImportedSymbol> ParseSymbols(BinaryReaderLE reader, int firstSymbolIndexBlockPos)
+    {
+        if (firstSymbolIndexBlockPos <= 0 || firstSymbolIndexBlockPos >= reader.Length)
         {
-            throw new InvalidOperationException("OCD_PARSE_FAILED");
+            return [];
         }
 
-        return parsed;
+        var result = new Dictionary<string, OcdImportedSymbol>(StringComparer.OrdinalIgnoreCase);
+        var visitedBlocks = new HashSet<int>();
+        var blockPos = firstSymbolIndexBlockPos;
+
+        while (blockPos != 0 && visitedBlocks.Add(blockPos))
+        {
+            if (!reader.CanRead(blockPos, SymbolIndexBlockSize))
+            {
+                break;
+            }
+
+            var nextBlock = reader.ReadInt32(blockPos);
+            for (var i = 0; i < 256; i++)
+            {
+                var symbolPos = reader.ReadInt32(blockPos + 4 + i * 4);
+                if (symbolPos <= 0 || symbolPos >= reader.Length)
+                {
+                    continue;
+                }
+
+                if (TryReadSymbol(reader, symbolPos, out var symbol))
+                {
+                    result[symbol.SymbolCode] = symbol;
+                }
+            }
+
+            blockPos = nextBlock;
+        }
+
+        return result.Values.ToList();
+    }
+
+    private static bool TryReadSymbol(BinaryReaderLE reader, int symbolPos, out OcdImportedSymbol symbol)
+    {
+        symbol = null!;
+
+        if (!reader.CanRead(symbolPos, 32))
+        {
+            return false;
+        }
+
+        var size = reader.ReadInt32(symbolPos);
+        if (size <= 0 || size > 2_000_000 || !reader.CanRead(symbolPos, size))
+        {
+            return false;
+        }
+
+        var symNumRaw = reader.ReadInt32(symbolPos + 4);
+        var otp = reader.ReadByte(symbolPos + 8);
+        var flags = reader.ReadByte(symbolPos + 9);
+        var status = reader.ReadByte(symbolPos + 11);
+        var extent = reader.ReadInt32(symbolPos + 16);
+        var nColors = reader.ReadInt16(symbolPos + 26);
+
+        var colors = new List<short>(14);
+        for (var i = 0; i < 14; i++)
+        {
+            colors.Add(reader.ReadInt16(symbolPos + 28 + i * 2));
+        }
+
+        var descriptionRaw = reader.ReadBytes(symbolPos + 56, 64);
+        var name = DecodeAnsi(descriptionRaw);
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = $"Символ {FormatSymbolCode(symNumRaw)}";
+        }
+
+        var iconBits = reader.ReadBytes(symbolPos + 120, 484);
+        var iconDataUrl = BuildIconDataUrl(iconBits);
+
+        var symbolCode = FormatSymbolCode(symNumRaw);
+        var terrainClass = ResolveTerrainClass(symNumRaw, otp);
+        var symbolStyle = ResolveSymbolStyle(otp);
+
+        var style = new OcdSymbolStyle
+        {
+            Size = size,
+            RawSymbolNumber = symNumRaw,
+            ObjectType = otp,
+            Flags = flags,
+            Status = status,
+            Extent = extent,
+            NumberOfColors = nColors,
+            Colors = colors,
+            RawDataBase64 = Convert.ToBase64String(reader.ReadBytes(symbolPos, size))
+        };
+
+        symbol = new OcdImportedSymbol
+        {
+            TerrainClass = terrainClass,
+            SymbolCode = symbolCode,
+            SymbolStyle = symbolStyle,
+            Name = name,
+            Traversability = ResolveTraversability(terrainClass),
+            IconDataUrl = iconDataUrl,
+            StyleJson = JsonSerializer.Serialize(style)
+        };
+
+        return true;
     }
 
     private static void TryReadObject(
@@ -113,7 +245,6 @@ public sealed class OcdImportService : IOcdImportService
             var rawX = reader.ReadInt32(polyPos + i * 8);
             var rawY = reader.ReadInt32(polyPos + i * 8 + 4);
 
-            var xFlags = rawX & 0xFF;
             var yFlags = rawY & 0xFF;
             var x = (rawX >> 8) / 100d;
             var y = (rawY >> 8) / 100d;
@@ -123,8 +254,6 @@ public sealed class OcdImportService : IOcdImportService
                 areaHoleStarts.Add(i);
             }
 
-            // x/y flags сейчас не сохраняем отдельно, но считываем, чтобы явно не терять контекст.
-            _ = xFlags;
             points.Add(new OcdPoint(x, y));
         }
 
@@ -134,14 +263,15 @@ public sealed class OcdImportService : IOcdImportService
         }
 
         var terrainClass = ResolveTerrainClass(symbol, objectType);
-        var symbolCode = ResolveSymbolCode(symbol);
+        var symbolCode = FormatSymbolCode(symbol);
         var symbolStyle = ResolveSymbolStyle(objectType);
         var suggestedName = $"Пользовательский символ {symbolCode}";
+
         switch (objectType)
         {
-            case 1: // point
-            case 4: // unformatted text
-            case 5: // formatted text
+            case 1:
+            case 4:
+            case 5:
                 output.Add(new OcdImportedObject
                 {
                     TerrainClass = terrainClass,
@@ -154,8 +284,8 @@ public sealed class OcdImportService : IOcdImportService
                 });
                 return;
 
-            case 2: // line
-            case 6: // line text
+            case 2:
+            case 6:
                 if (points.Count >= 2)
                 {
                     output.Add(new OcdImportedObject
@@ -172,7 +302,7 @@ public sealed class OcdImportService : IOcdImportService
 
                 return;
 
-            case 3: // area
+            case 3:
                 foreach (var ring in SplitAreaRings(points, areaHoleStarts))
                 {
                     if (ring.Count < 3)
@@ -194,7 +324,7 @@ public sealed class OcdImportService : IOcdImportService
 
                 return;
 
-            case 7: // rectangle
+            case 7:
                 if (TryBuildRectangle(points, out var rectangle))
                 {
                     output.Add(new OcdImportedObject
@@ -212,7 +342,6 @@ public sealed class OcdImportService : IOcdImportService
                 return;
 
             default:
-                // Неизвестный тип объекта сохраняем как точку-якорь, чтобы не потерять данные.
                 output.Add(new OcdImportedObject
                 {
                     TerrainClass = terrainClass,
@@ -225,6 +354,52 @@ public sealed class OcdImportService : IOcdImportService
                 });
                 return;
         }
+    }
+
+    private static string DecodeAnsi(byte[] bytes)
+    {
+        var zeroPos = Array.IndexOf(bytes, (byte)0);
+        var len = zeroPos >= 0 ? zeroPos : bytes.Length;
+        return Encoding.Latin1.GetString(bytes, 0, len).Trim();
+    }
+
+    private static string BuildIconDataUrl(byte[] iconBits)
+    {
+        if (iconBits.Length != 484)
+        {
+            return string.Empty;
+        }
+
+        var sb = new StringBuilder();
+        sb.Append("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 22' width='22' height='22'>");
+        for (var y = 0; y < 22; y++)
+        {
+            for (var x = 0; x < 22; x++)
+            {
+                var idx = iconBits[y * 22 + x];
+                if (idx == 0)
+                {
+                    continue;
+                }
+
+                var shade = Math.Clamp(255 - idx, 0, 255);
+                sb.Append("<rect x='")
+                    .Append(x)
+                    .Append("' y='")
+                    .Append(y)
+                    .Append("' width='1' height='1' fill='rgb(")
+                    .Append(shade)
+                    .Append(',')
+                    .Append(shade)
+                    .Append(',')
+                    .Append(shade)
+                    .Append(")' />");
+            }
+        }
+
+        sb.Append("</svg>");
+        var svgBytes = Encoding.UTF8.GetBytes(sb.ToString());
+        return $"data:image/svg+xml;base64,{Convert.ToBase64String(svgBytes)}";
     }
 
     private static IEnumerable<List<OcdPoint>> SplitAreaRings(List<OcdPoint> points, HashSet<int> holeStarts)
@@ -334,10 +509,17 @@ public sealed class OcdImportService : IOcdImportService
             _ => 65m
         };
 
-    private static string ResolveSymbolCode(int symbol)
+    private static string FormatSymbolCode(int symbol)
     {
-        var sym = Math.Abs(symbol) / 1000;
-        return sym <= 0 ? "unknown" : sym.ToString(CultureInfo.InvariantCulture);
+        var abs = Math.Abs(symbol);
+        var major = abs / 1000;
+        var fraction = abs % 1000;
+        if (fraction == 0)
+        {
+            return major.ToString(CultureInfo.InvariantCulture);
+        }
+
+        return $"{major}.{fraction:000}".TrimEnd('0').TrimEnd('.');
     }
 
     private static string ResolveSymbolStyle(byte objectType) =>
@@ -380,6 +562,19 @@ public sealed class OcdImportService : IOcdImportService
 
     private readonly record struct OcdPoint(double X, double Y);
 
+    private sealed class OcdSymbolStyle
+    {
+        public int Size { get; init; }
+        public int RawSymbolNumber { get; init; }
+        public byte ObjectType { get; init; }
+        public byte Flags { get; init; }
+        public byte Status { get; init; }
+        public int Extent { get; init; }
+        public short NumberOfColors { get; init; }
+        public IReadOnlyList<short> Colors { get; init; } = [];
+        public string RawDataBase64 { get; init; } = string.Empty;
+    }
+
     private sealed class BinaryReaderLE(byte[] bytes)
     {
         public int Length => bytes.Length;
@@ -395,6 +590,13 @@ public sealed class OcdImportService : IOcdImportService
         public byte ReadByte(int offset)
         {
             return bytes[offset];
+        }
+
+        public byte[] ReadBytes(int offset, int byteCount)
+        {
+            var buffer = new byte[byteCount];
+            Buffer.BlockCopy(bytes, offset, buffer, 0, byteCount);
+            return buffer;
         }
 
         public ushort ReadUInt16(int offset)

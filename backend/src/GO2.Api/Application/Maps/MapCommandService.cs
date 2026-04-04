@@ -91,7 +91,9 @@ public sealed class MapCommandService(
             bytes = memory.ToArray();
         }
 
-        var parsedObjects = ocdImportService.Parse(bytes);
+        var importResult = ocdImportService.ParseDetailed(bytes);
+        var parsedObjects = importResult.Objects;
+        var parsedSymbols = importResult.Symbols;
 
         await using var saveStream = new MemoryStream(bytes);
         var originalPath = await fileStorage.SaveAsync(saveStream, extension, cancellationToken);
@@ -135,6 +137,81 @@ public sealed class MapCommandService(
                 .GroupBy(x => x.SymbolCode, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
 
+            var userTypes = await dbContext.TerrainObjectTypes
+                .Where(x => x.OwnerUserId == userId && !x.IsSystem)
+                .ToListAsync(cancellationToken);
+            var userTypeByName = userTypes
+                .Where(x => !string.IsNullOrWhiteSpace(x.Name))
+                .GroupBy(x => x.Name.Trim(), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var symbol in parsedSymbols)
+            {
+                var symbolCode = symbol.SymbolCode.Trim();
+                if (string.IsNullOrWhiteSpace(symbolCode))
+                {
+                    continue;
+                }
+
+                if (typeBySymbol.TryGetValue(symbolCode, out var existingType))
+                {
+                    if (!existingType.IsSystem && existingType.OwnerUserId == userId)
+                    {
+                        existingType.TerrainClass = symbol.TerrainClass;
+                        existingType.SymbolStyle = symbol.SymbolStyle;
+                        if (!string.IsNullOrWhiteSpace(symbol.Name))
+                        {
+                            existingType.Name = symbol.Name.Trim();
+                        }
+
+                        existingType.Icon = string.IsNullOrWhiteSpace(existingType.Icon) ? symbol.SymbolStyle : existingType.Icon;
+                        existingType.IconDataUrl = symbol.IconDataUrl;
+                        existingType.StyleJson = symbol.StyleJson;
+                        existingType.Traversability = symbol.Traversability;
+                    }
+
+                    continue;
+                }
+
+                var symbolName = string.IsNullOrWhiteSpace(symbol.Name)
+                    ? $"Symbol {symbolCode}"
+                    : symbol.Name.Trim();
+
+                if (userTypeByName.TryGetValue(symbolName, out var existingByName))
+                {
+                    existingByName.TerrainClass = symbol.TerrainClass;
+                    existingByName.SymbolCode = symbolCode;
+                    existingByName.SymbolStyle = symbol.SymbolStyle;
+                    existingByName.Name = symbolName;
+                    existingByName.Icon = string.IsNullOrWhiteSpace(existingByName.Icon) ? symbol.SymbolStyle : existingByName.Icon;
+                    existingByName.IconDataUrl = symbol.IconDataUrl;
+                    existingByName.StyleJson = symbol.StyleJson;
+                    existingByName.Traversability = symbol.Traversability;
+                    typeBySymbol[symbolCode] = existingByName;
+                    continue;
+                }
+
+                var importedType = new TerrainObjectType
+                {
+                    OwnerUserId = userId,
+                    TerrainClass = symbol.TerrainClass,
+                    SymbolCode = symbolCode,
+                    SymbolStyle = symbol.SymbolStyle,
+                    Name = symbolName,
+                    Color = "#9CA3AF",
+                    Icon = symbol.SymbolStyle,
+                    IconDataUrl = symbol.IconDataUrl,
+                    StyleJson = symbol.StyleJson,
+                    Traversability = symbol.Traversability,
+                    Comment = "Imported from OCAD symbol definition.",
+                    IsSystem = false
+                };
+
+                dbContext.TerrainObjectTypes.Add(importedType);
+                userTypeByName[symbolName] = importedType;
+                typeBySymbol[symbolCode] = importedType;
+            }
+
             foreach (var imported in parsedObjects)
             {
                 var symbolCode = imported.SymbolCode.Trim();
@@ -157,6 +234,8 @@ public sealed class MapCommandService(
                     Name = imported.SuggestedName,
                     Color = "#9CA3AF",
                     Icon = "scan-search",
+                    IconDataUrl = string.Empty,
+                    StyleJson = string.Empty,
                     Traversability = imported.Traversability,
                     Comment = "Создано автоматически при импорте OCAD: символ не найден в базовом каталоге.",
                     IsSystem = false

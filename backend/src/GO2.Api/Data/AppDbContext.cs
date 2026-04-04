@@ -58,7 +58,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .OnDelete(DeleteBehavior.SetNull);
 
         modelBuilder.Entity<TerrainObjectType>()
-            .HasIndex(x => new { x.OwnerUserId, x.Name })
+            .HasIndex(x => new { x.OwnerUserId, x.Name, x.SymbolCode })
             .IsUnique();
 
         modelBuilder.Entity<TerrainObjectType>()
@@ -96,10 +96,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasMaxLength(500);
 
         modelBuilder.Entity<TerrainObjectType>()
-            .HasCheckConstraint("CK_TerrainObjectType_Traversability_0_100", "\"Traversability\" >= 0 AND \"Traversability\" <= 100");
+            .ToTable(t => t.HasCheckConstraint("CK_TerrainObjectType_Traversability_0_100", "\"Traversability\" >= 0 AND \"Traversability\" <= 100"));
 
         modelBuilder.Entity<TerrainObject>()
-            .HasCheckConstraint("CK_TerrainObject_Traversability_0_100", "\"Traversability\" >= 0 AND \"Traversability\" <= 100");
+            .ToTable(t => t.HasCheckConstraint("CK_TerrainObject_Traversability_0_100", "\"Traversability\" >= 0 AND \"Traversability\" <= 100"));
 
         modelBuilder.Entity<DigitizationJob>()
             .HasOne(x => x.Map)

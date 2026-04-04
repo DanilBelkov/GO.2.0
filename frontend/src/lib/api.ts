@@ -122,6 +122,8 @@ export type TerrainType = {
   name: string;
   color: string;
   icon: string;
+  iconDataUrl: string;
+  styleJson: string;
   traversability: number;
   comment: string;
   isSystem: boolean;

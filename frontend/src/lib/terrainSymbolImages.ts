@@ -113,6 +113,10 @@ const ISOM_FILE_BY_CODE: Record<string, string> = {
 };
 
 export function getTerrainTypeImageUrl(type: TerrainType): string | null {
+  if (type.iconDataUrl && type.iconDataUrl.startsWith('data:image/')) {
+    return type.iconDataUrl;
+  }
+
   const code = (type.symbolCode ?? '').trim();
   if (!code) {
     return null;

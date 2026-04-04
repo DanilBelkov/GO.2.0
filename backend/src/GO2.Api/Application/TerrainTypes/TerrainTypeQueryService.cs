@@ -27,6 +27,8 @@ public sealed class TerrainTypeQueryService(AppDbContext dbContext) : ITerrainTy
                 Name = x.Name,
                 Color = x.Color,
                 Icon = x.Icon,
+                IconDataUrl = x.IconDataUrl,
+                StyleJson = x.StyleJson,
                 Traversability = x.Traversability,
                 Comment = x.Comment,
                 IsSystem = x.IsSystem

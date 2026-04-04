@@ -14,6 +14,8 @@ public sealed class TerrainTypeResponse
     public string Name { get; set; } = string.Empty;
     public string Color { get; set; } = string.Empty;
     public string Icon { get; set; } = string.Empty;
+    public string IconDataUrl { get; set; } = string.Empty;
+    public string StyleJson { get; set; } = string.Empty;
     public decimal Traversability { get; set; }
     public string Comment { get; set; } = string.Empty;
     public bool IsSystem { get; set; }

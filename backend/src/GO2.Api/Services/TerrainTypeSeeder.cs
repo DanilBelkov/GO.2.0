@@ -25,6 +25,8 @@ public static class TerrainTypeSeeder
                 entity.Name = seed.Name;
                 entity.Color = seed.Color;
                 entity.Icon = seed.Icon;
+                entity.IconDataUrl = string.Empty;
+                entity.StyleJson = string.Empty;
                 entity.Traversability = seed.Traversability;
                 entity.Comment = seed.Comment;
                 continue;
@@ -39,6 +41,8 @@ public static class TerrainTypeSeeder
                 Name = seed.Name,
                 Color = seed.Color,
                 Icon = seed.Icon,
+                IconDataUrl = string.Empty,
+                StyleJson = string.Empty,
                 Traversability = seed.Traversability,
                 Comment = seed.Comment,
                 IsSystem = true

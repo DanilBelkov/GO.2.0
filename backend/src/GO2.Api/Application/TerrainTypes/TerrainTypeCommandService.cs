@@ -27,6 +27,8 @@ public sealed class TerrainTypeCommandService(AppDbContext dbContext) : ITerrain
             Name = normalizedName,
             Color = request.Color.Trim(),
             Icon = request.Icon.Trim(),
+            IconDataUrl = string.Empty,
+            StyleJson = string.Empty,
             Traversability = request.Traversability,
             Comment = request.Comment.Trim(),
             IsSystem = false
@@ -86,6 +88,8 @@ public sealed class TerrainTypeCommandService(AppDbContext dbContext) : ITerrain
             Name = entity.Name,
             Color = entity.Color,
             Icon = entity.Icon,
+            IconDataUrl = entity.IconDataUrl,
+            StyleJson = entity.StyleJson,
             Traversability = entity.Traversability,
             Comment = entity.Comment,
             IsSystem = entity.IsSystem
