@@ -168,6 +168,7 @@ public sealed class MapCommandService(
                         existingType.IconDataUrl = symbol.IconDataUrl;
                         existingType.StyleJson = symbol.StyleJson;
                         existingType.Traversability = symbol.Traversability;
+                        existingType.Color = ResolveClassColor(symbol.TerrainClass);
                     }
 
                     continue;
@@ -187,6 +188,7 @@ public sealed class MapCommandService(
                     existingByName.IconDataUrl = symbol.IconDataUrl;
                     existingByName.StyleJson = symbol.StyleJson;
                     existingByName.Traversability = symbol.Traversability;
+                    existingByName.Color = ResolveClassColor(symbol.TerrainClass);
                     typeBySymbol[symbolCode] = existingByName;
                     continue;
                 }
@@ -198,7 +200,7 @@ public sealed class MapCommandService(
                     SymbolCode = symbolCode,
                     SymbolStyle = symbol.SymbolStyle,
                     Name = symbolName,
-                    Color = "#9CA3AF",
+                    Color = ResolveClassColor(symbol.TerrainClass),
                     Icon = symbol.SymbolStyle,
                     IconDataUrl = symbol.IconDataUrl,
                     StyleJson = symbol.StyleJson,
@@ -232,7 +234,7 @@ public sealed class MapCommandService(
                     SymbolCode = symbolCode,
                     SymbolStyle = imported.SymbolStyle,
                     Name = imported.SuggestedName,
-                    Color = "#9CA3AF",
+                    Color = ResolveClassColor(imported.TerrainClass),
                     Icon = "scan-search",
                     IconDataUrl = string.Empty,
                     StyleJson = string.Empty,
@@ -488,4 +490,18 @@ public sealed class MapCommandService(
             await scopedDbContext.SaveChangesAsync();
         }
     }
+
+    private static string ResolveClassColor(TerrainClass terrainClass) =>
+        terrainClass switch
+        {
+            TerrainClass.Vegetation => "#86EFAC",
+            TerrainClass.Hydrography => "#60A5FA",
+            TerrainClass.RocksAndStones => "#9CA3AF",
+            TerrainClass.Relief => "#8B5A2B",
+            TerrainClass.ManMade => "#000000",
+            TerrainClass.CourseMarkings => "#EF4444",
+            TerrainClass.SkiTrackMarkings => "#16A34A",
+            TerrainClass.TechnicalSymbols => "#A855F7",
+            _ => "#9CA3AF"
+        };
 }

@@ -3,7 +3,7 @@ import type { ChangeEvent } from 'react';
 import { Circle, Image as KonvaImage, Layer, Line, Stage } from 'react-konva';
 import type Konva from 'konva';
 import { useNavigate } from 'react-router-dom';
-import { clearAuth } from '../lib/auth';
+import { clearAuth, getCurrentUserRole } from '../lib/auth';
 import {
   calculateRoutes,
   createTerrainType,
@@ -64,6 +64,11 @@ type RouteRun = {
 };
 
 type MapsTab = 'ingest' | 'editor' | 'routes';
+type OcdTypeStyle = {
+  objectType?: number;
+  extent?: number;
+  flags?: number;
+};
 
 const CANVAS_WIDTH = 1320;
 const CANVAS_HEIGHT = 760;
@@ -94,18 +99,19 @@ const CLASS_LABELS_RU: Record<TerrainClass, string> = {
   TechnicalSymbols: 'Технические символы',
 };
 const OBJECT_COLORS: Record<TerrainClass, string> = {
-  Vegetation: '#34D399',
+  Vegetation: '#86EFAC',
   Hydrography: '#60A5FA',
-  Relief: '#FBBF24',
-  ManMade: '#FB7185',
+  Relief: '#8B5A2B',
+  ManMade: '#000000',
   RocksAndStones: '#9CA3AF',
-  CourseMarkings: '#A855F7',
+  CourseMarkings: '#EF4444',
   SkiTrackMarkings: '#16A34A',
-  TechnicalSymbols: '#0EA5E9',
+  TechnicalSymbols: '#A855F7',
 };
 // Полноценная рабочая страница: карты, редактор объектов, маршрутизация, история и экспорт UI.
 export function MapsPage() {
   const navigate = useNavigate();
+  const isAdmin = useMemo(() => getCurrentUserRole()?.toLowerCase() === 'admin', []);
 
   const [maps, setMaps] = useState<MapListItem[]>([]);
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
@@ -151,6 +157,7 @@ export function MapsPage() {
   const [layerDigitized, setLayerDigitized] = useState(true);
   const [layerGraph, setLayerGraph] = useState(false);
   const [layerRoute, setLayerRoute] = useState(true);
+  const [typeIconImages, setTypeIconImages] = useState<Record<string, HTMLImageElement>>({});
 
   const selectedRoute = useMemo(
     () => routeVariants.find((x) => x.rank === selectedRouteRank) ?? routeVariants[0] ?? null,
@@ -164,6 +171,18 @@ export function MapsPage() {
 
   const terrainTypeById = useMemo(
     () => new Map(terrainTypes.map((type) => [type.id, type])),
+    [terrainTypes],
+  );
+  const selectedObjectType = useMemo(
+    () => (selectedObject?.terrainObjectTypeId ? terrainTypeById.get(selectedObject.terrainObjectTypeId) : null),
+    [selectedObject, terrainTypeById],
+  );
+  const terrainTypesGrouped = useMemo(
+    () =>
+      CLASS_OPTIONS.map((terrainClass) => ({
+        terrainClass,
+        items: terrainTypes.filter((t) => t.terrainClass === terrainClass),
+      })).filter((x) => x.items.length > 0),
     [terrainTypes],
   );
   const terrainTypesForSelectedClass = useMemo(
@@ -240,6 +259,36 @@ export function MapsPage() {
 
     return OBJECT_COLORS[obj.terrainClass];
   }
+
+  /*пока не нужно, оставлю задел на будущее (возможно)
+  function parseTypeStyle(type: TerrainType | undefined): OcdTypeStyle | null {
+    if (!type?.styleJson) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(type.styleJson) as OcdTypeStyle;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  function resolveStrokeWidth(obj: EditorObject): number {
+    const type = obj.terrainObjectTypeId ? terrainTypeById.get(obj.terrainObjectTypeId) : undefined;
+    const style = parseTypeStyle(type);
+    const extent = Math.max(0, style?.extent ?? 0);
+    return Math.min(2.2, Math.max(0.4, extent / 1400 || 0.7));
+  }
+
+  function resolveDash(obj: EditorObject): number[] | undefined {
+    const type = obj.terrainObjectTypeId ? terrainTypeById.get(obj.terrainObjectTypeId) : undefined;
+    const style = parseTypeStyle(type);
+    const flags = style?.flags ?? 0;
+    if ((flags & 1) !== 0) return [6, 5];
+    if ((flags & 2) !== 0) return [2, 4];
+    return undefined;
+  }*/
 
   function worldToCanvas(point: RoutePoint): RoutePoint {
     return { x: point.x, y: -point.y };
@@ -396,6 +445,45 @@ export function MapsPage() {
   }, [selectedVersionId]);
 
   useEffect(() => {
+    const urls = terrainTypes
+      .map((t) => getTerrainTypeImageUrl(t))
+      .filter((x): x is string => Boolean(x));
+    const unique = Array.from(new Set(urls));
+    if (unique.length === 0) {
+      setTypeIconImages({});
+      return;
+    }
+
+    let active = true;
+    const nextMap: Record<string, HTMLImageElement> = {};
+    let loaded = 0;
+
+    for (const url of unique) {
+      const img = new window.Image();
+      img.onload = () => {
+        if (!active) return;
+        nextMap[url] = img;
+        loaded += 1;
+        if (loaded === unique.length) {
+          setTypeIconImages(nextMap);
+        }
+      };
+      img.onerror = () => {
+        if (!active) return;
+        loaded += 1;
+        if (loaded === unique.length) {
+          setTypeIconImages(nextMap);
+        }
+      };
+      img.src = url;
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [terrainTypes]);
+
+  useEffect(() => {
     if (activeTab === 'routes') {
       setTool('route-point');
       return;
@@ -470,6 +558,12 @@ export function MapsPage() {
     }
 
     if (tool === 'route-point') return;
+    if (!isAdmin) {
+      if (event.target === event.target.getStage()) {
+        setSelectedObjectId(null);
+      }
+      return;
+    }
 
     if (tool === 'point') {
       pushHistory([
@@ -498,6 +592,7 @@ export function MapsPage() {
   }
 
   function finishDraftShape() {
+    if (!isAdmin) return;
     if (tool === 'line' && draftPoints.length < 2) return;
     if (tool === 'polygon' && draftPoints.length < 3) return;
     if (tool !== 'line' && tool !== 'polygon') return;
@@ -518,6 +613,7 @@ export function MapsPage() {
   }
 
   function updateObject(id: string, updater: (x: EditorObject) => EditorObject) {
+    if (!isAdmin) return;
     pushHistory(objects.map((obj) => (obj.id === id ? updater(obj) : obj)));
   }
 
@@ -755,7 +851,10 @@ export function MapsPage() {
             <div className="upload-block">
               <h3>Импорт OCAD</h3>
               <label className="upload">
-                <span>{uploadingOcd ? 'Импорт OCAD...' : 'Импорт карты OCAD (.ocd)'}</span>
+                <span className="upload-with-loader">
+                  {uploadingOcd && <span className="inline-loader" aria-hidden="true" />}
+                  {uploadingOcd ? 'Импорт OCAD...' : 'Импорт карты OCAD (.ocd)'}
+                </span>
                 <input type="file" accept=".ocd,application/octet-stream" onChange={onUploadOcd} />
               </label>
             </div>
@@ -767,7 +866,14 @@ export function MapsPage() {
                 </select>
               </label>
               <button onClick={runDigitization} disabled={!selectedMapId || !selectedVersionId}>Оцифровать</button>
-              {digitize && <p className="hint">Статус: {digitize.status} ({digitize.progress}%)</p>}
+              {digitize && (
+                <p className="hint digitize-status">
+                  {(digitize.status === 'Queued' || digitize.status === 'Running') && (
+                    <span className="inline-loader" aria-hidden="true" />
+                  )}
+                  Статус: {digitize.status} ({digitize.progress}%)
+                </p>
+              )}
             </div>
           </div>
 
@@ -790,11 +896,15 @@ export function MapsPage() {
             {activeTab === 'editor' && (
               <>
                 <button style={toolButtonStyle('select')} onClick={() => setTool('select')}>Выбор</button>
-                <button style={toolButtonStyle('point')} onClick={() => setTool('point')}>Точка</button>
-                <button style={toolButtonStyle('line')} onClick={() => setTool('line')}>Линия</button>
-                <button style={toolButtonStyle('polygon')} onClick={() => setTool('polygon')}>Полигон</button>
-                <button onClick={finishDraftShape} disabled={draftPoints.length === 0}>Завершить фигуру</button>
-                <button onClick={() => setDraftPoints([])} disabled={draftPoints.length === 0}>Очистить</button>
+                {isAdmin && (
+                  <>
+                    <button style={toolButtonStyle('point')} onClick={() => setTool('point')}>Точка</button>
+                    <button style={toolButtonStyle('line')} onClick={() => setTool('line')}>Линия</button>
+                    <button style={toolButtonStyle('polygon')} onClick={() => setTool('polygon')}>Полигон</button>
+                    <button onClick={finishDraftShape} disabled={draftPoints.length === 0}>Завершить фигуру</button>
+                    <button onClick={() => setDraftPoints([])} disabled={draftPoints.length === 0}>Очистить</button>
+                  </>
+                )}
                 <button onClick={undo} disabled={!history.length}>Undo</button>
                 <button onClick={redoAction} disabled={!redo.length}>Redo</button>
                 <button onClick={saveVersion} disabled={saving}>{saving ? 'Сохраняем...' : 'Сохранить версию'}</button>
@@ -818,7 +928,7 @@ export function MapsPage() {
             </label>
             <label><input type="checkbox" checked={layerSource} onChange={(e) => setLayerSource(e.target.checked)} /> исходник</label>
             <label><input type="checkbox" checked={layerDigitized} onChange={(e) => setLayerDigitized(e.target.checked)} /> оцифровка</label>
-            {activeTab === 'editor' && <label><input type="checkbox" checked={layerGraph} onChange={(e) => setLayerGraph(e.target.checked)} /> граф</label>}
+            {activeTab === 'editor' && isAdmin && <label><input type="checkbox" checked={layerGraph} onChange={(e) => setLayerGraph(e.target.checked)} /> граф</label>}
             <label><input type="checkbox" checked={layerRoute} onChange={(e) => setLayerRoute(e.target.checked)} /> маршрут</label>
           </div>
 
@@ -845,33 +955,66 @@ export function MapsPage() {
                   <Layer>
                     {objects.map((obj) => {
                       const color = resolveObjectColor(obj);
+                      const type = obj.terrainObjectTypeId ? terrainTypeById.get(obj.terrainObjectTypeId) : undefined;
+                      const typeImageUrl = type ? getTerrainTypeImageUrl(type) : null;
+                      const typeImage = typeImageUrl ? typeIconImages[typeImageUrl] : undefined;
                       if (obj.geometryKind === 'Point') {
                         const canvasPoint = worldToCanvas(obj.points[0] ?? { x: 0, y: 0 });
                         return (
-                          <Circle
-                            key={obj.id}
-                            x={canvasPoint.x}
-                            y={canvasPoint.y}
-                            radius={obj.id === selectedObjectId ? POINT_RADIUS_SELECTED : POINT_RADIUS}
-                            fill={color}
-                            draggable={activeTab === 'editor' && obj.id === selectedObjectId && tool === 'select'}
-                            onClick={(e) => {
-                              if (tool === 'route-point' || activeTab !== 'editor') return;
-                              e.cancelBubble = true;
-                              setSelectedObjectId(obj.id);
-                            }}
-                            onTap={(e) => {
-                              if (tool === 'route-point' || activeTab !== 'editor') return;
-                              e.cancelBubble = true;
-                              setSelectedObjectId(obj.id);
-                            }}
-                            onDragEnd={(e) =>
-                              updateObject(obj.id, (current) => ({
-                                ...current,
-                                points: [canvasToWorld({ x: e.target.x(), y: e.target.y() })],
-                              }))
-                            }
-                          />
+                          /*пока не нужно, оставлю задел на будущее (возможно)
+                          typeImage ? (
+                            <KonvaImage
+                              key={obj.id}
+                              image={typeImage}
+                              x={canvasPoint.x}
+                              y={canvasPoint.y}
+                              width={8}
+                              height={8}
+                              offset={{ x: 4, y: 4 }}
+                              draggable={isAdmin && activeTab === 'editor' && obj.id === selectedObjectId && tool === 'select'}
+                              onClick={(e) => {
+                                if (tool === 'route-point' || activeTab !== 'editor') return;
+                                e.cancelBubble = true;
+                                setSelectedObjectId(obj.id);
+                              }}
+                              onTap={(e) => {
+                                if (tool === 'route-point' || activeTab !== 'editor') return;
+                                e.cancelBubble = true;
+                                setSelectedObjectId(obj.id);
+                              }}
+                              onDragEnd={(e) =>
+                                updateObject(obj.id, (current) => ({
+                                  ...current,
+                                  points: [canvasToWorld({ x: e.target.x(), y: e.target.y() })],
+                                }))
+                              }
+                            />
+                          ) : ( */
+                            <Circle
+                              key={obj.id}
+                              x={canvasPoint.x}
+                              y={canvasPoint.y}
+                              radius={obj.id === selectedObjectId ? POINT_RADIUS_SELECTED : POINT_RADIUS}
+                              fill={color}
+                              draggable={isAdmin && activeTab === 'editor' && obj.id === selectedObjectId && tool === 'select'}
+                              onClick={(e) => {
+                                if (tool === 'route-point' || activeTab !== 'editor') return;
+                                e.cancelBubble = true;
+                                setSelectedObjectId(obj.id);
+                              }}
+                              onTap={(e) => {
+                                if (tool === 'route-point' || activeTab !== 'editor') return;
+                                e.cancelBubble = true;
+                                setSelectedObjectId(obj.id);
+                              }}
+                              onDragEnd={(e) =>
+                                updateObject(obj.id, (current) => ({
+                                  ...current,
+                                  points: [canvasToWorld({ x: e.target.x(), y: e.target.y() })],
+                                }))
+                              }
+                            />
+                          //)
                         );
                       }
 
@@ -885,6 +1028,15 @@ export function MapsPage() {
                           closed={obj.geometryKind === 'Polygon'}
                           fill={obj.geometryKind === 'Polygon' ? `${color}44` : undefined}
                           stroke={color}
+                          /* пока не нужно, оставлю задел на будущее (возможно)
+                          fillPatternImage={obj.geometryKind === 'Polygon' && typeImage ? typeImage : undefined}
+                          fillPatternScale={obj.geometryKind === 'Polygon' && typeImage ? { x: 0.2, y: 0.2 } : undefined}
+                          dash={resolveDash(obj)}
+                          strokeWidth={
+                            obj.id === selectedObjectId
+                              ? Math.max(OBJECT_STROKE_WIDTH_SELECTED, resolveStrokeWidth(obj))
+                              : Math.max(OBJECT_STROKE_WIDTH, resolveStrokeWidth(obj))
+                          }*/
                           strokeWidth={obj.id === selectedObjectId ? OBJECT_STROKE_WIDTH_SELECTED : OBJECT_STROKE_WIDTH}
                           hitStrokeWidth={12}
                           onClick={(e) => {
@@ -901,7 +1053,8 @@ export function MapsPage() {
                       );
                     })}
 
-                    {activeTab === 'editor' &&
+                    {isAdmin &&
+                      activeTab === 'editor' &&
                       selectedObject?.geometryKind !== 'Point' &&
                       selectedObject?.points.map((p, i) => (
                         (() => {
@@ -928,7 +1081,7 @@ export function MapsPage() {
                         })()
                       ))}
 
-                    {activeTab === 'editor' && draftPoints.length > 0 && (
+                    {isAdmin && activeTab === 'editor' && draftPoints.length > 0 && (
                       <Line
                         points={draftPoints.flatMap((p) => {
                           const canvasPoint = worldToCanvas(p);
@@ -941,7 +1094,7 @@ export function MapsPage() {
                     )}
                   </Layer>
                 )}
-                {activeTab === 'editor' && layerGraph && (
+                {isAdmin && activeTab === 'editor' && layerGraph && (
                   <Layer>
                     {graphEdgeLines.map((edge, index) => (
                       (() => {
@@ -1002,94 +1155,119 @@ export function MapsPage() {
                 {!selectedObject && <p>Объект не выбран</p>}
                 {selectedObject && (
                   <div className="side-group">
-                    <label>Класс
-                      <select
-                        value={selectedObject.terrainClass}
-                        onChange={(e) =>
-                          updateObject(selectedObject.id, (x) => {
-                            const nextClass = e.target.value as TerrainClass;
-                            const selectedType = x.terrainObjectTypeId ? terrainTypeById.get(x.terrainObjectTypeId) : null;
-                            return {
-                              ...x,
-                              terrainClass: nextClass,
-                              terrainObjectTypeId: selectedType && selectedType.terrainClass !== nextClass ? null : x.terrainObjectTypeId,
-                            };
-                          })
-                        }
-                      >
-                        {CLASS_OPTIONS.map((c) => <option key={c} value={c}>{CLASS_LABELS_RU[c]}</option>)}
-                      </select>
-                    </label>
-                    <label>Тип
-                      <div className="types-icons-grid">
-                        <button
-                          type="button"
-                          className={selectedObject.terrainObjectTypeId === null ? 'icon-chip active' : 'icon-chip'}
-                          title="Тип не задан"
-                          onClick={() =>
-                            updateObject(selectedObject.id, (x) => ({
-                              ...x,
-                              terrainObjectTypeId: null,
-                            }))
-                          }
-                        >
-                          ∅
-                        </button>
-                        {terrainTypesForSelectedClass.map((t) => {
-                          const imageUrl = getTerrainTypeImageUrl(t);
-                          const isActive = selectedObject.terrainObjectTypeId === t.id;
-                          return (
+                    <p>Класс: {CLASS_LABELS_RU[selectedObject.terrainClass]}</p>
+                    <p>Тип: {selectedObjectType?.name ?? 'Не задан'}</p>
+                    <p>Проходимость: {selectedObject.traversability}</p>
+                    {selectedObjectType && getTerrainTypeImageUrl(selectedObjectType) && (
+                      <div className="selected-type-preview">
+                        <span>Изображение типа:</span>
+                        <img src={getTerrainTypeImageUrl(selectedObjectType) ?? ''} alt={selectedObjectType.name} width={30} height={30} loading="lazy" />
+                      </div>
+                    )}
+                    {isAdmin && (
+                      <>
+                        <label>Класс
+                          <select
+                            value={selectedObject.terrainClass}
+                            onChange={(e) =>
+                              updateObject(selectedObject.id, (x) => {
+                                const nextClass = e.target.value as TerrainClass;
+                                const selectedType = x.terrainObjectTypeId ? terrainTypeById.get(x.terrainObjectTypeId) : null;
+                                return {
+                                  ...x,
+                                  terrainClass: nextClass,
+                                  terrainObjectTypeId: selectedType && selectedType.terrainClass !== nextClass ? null : x.terrainObjectTypeId,
+                                };
+                              })
+                            }
+                          >
+                            {CLASS_OPTIONS.map((c) => <option key={c} value={c}>{CLASS_LABELS_RU[c]}</option>)}
+                          </select>
+                        </label>
+                        <label>Тип
+                          <div className="types-icons-grid">
                             <button
-                              key={t.id}
                               type="button"
-                              className={isActive ? 'icon-chip active' : 'icon-chip'}
-                              title={`${t.name} (${t.terrainClassNameRu})`}
+                              className={selectedObject.terrainObjectTypeId === null ? 'icon-chip active' : 'icon-chip'}
+                              title="Тип не задан"
                               onClick={() =>
                                 updateObject(selectedObject.id, (x) => ({
                                   ...x,
-                                  terrainClass: t.terrainClass,
-                                  terrainObjectTypeId: t.id,
-                                  traversability: t.traversability,
+                                  terrainObjectTypeId: null,
                                 }))
                               }
                             >
-                              {imageUrl ? (
-                                <img src={imageUrl} alt={t.name} width={22} height={22} loading="lazy" />
-                              ) : (
-                                <span>{t.symbolCode || 'USR'}</span>
-                              )}
+                              ∅
                             </button>
-                          );
-                        })}
-                      </div>
-                    </label>
-                    <label>Проходимость
-                      <input type="number" min={0} max={100} step={1} value={selectedObject.traversability} onChange={(e) => updateObject(selectedObject.id, (x) => ({ ...x, traversability: Number(e.target.value) }))} />
-                    </label>
+                            {terrainTypesForSelectedClass.map((t) => {
+                              const imageUrl = getTerrainTypeImageUrl(t);
+                              const isActive = selectedObject.terrainObjectTypeId === t.id;
+                              return (
+                                <button
+                                  key={t.id}
+                                  type="button"
+                                  className={isActive ? 'icon-chip active' : 'icon-chip'}
+                                  title={`${t.name} (${t.terrainClassNameRu})`}
+                                  onClick={() =>
+                                    updateObject(selectedObject.id, (x) => ({
+                                      ...x,
+                                      terrainClass: t.terrainClass,
+                                      terrainObjectTypeId: t.id,
+                                      traversability: t.traversability,
+                                    }))
+                                  }
+                                >
+                                  {imageUrl ? (
+                                    <img src={imageUrl} alt={t.name} width={22} height={22} loading="lazy" />
+                                  ) : (
+                                    <span>{t.symbolCode || 'USR'}</span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </label>
+                        <label>Проходимость
+                          <input type="number" min={0} max={100} step={1} value={selectedObject.traversability} onChange={(e) => updateObject(selectedObject.id, (x) => ({ ...x, traversability: Number(e.target.value) }))} />
+                        </label>
+                      </>
+                    )}
                     <button onClick={() => pushHistory(objects.filter((x) => x.id !== selectedObject.id))}>Удалить объект</button>
                   </div>
                 )}
 
-                <h3>Типы объектов</h3>
-                <div className="side-group">
-                  <button onClick={openCreateTypeModal}>+ Добавить тип</button>
-                  {terrainTypes.map((t) => (
-                    <div key={t.id} className="types-actions">
-                      <span
-                        style={{ color: t.color, fontSize: 18, lineHeight: 1 }}
-                        title={`${t.name} (${t.terrainClassNameRu}) • код ${t.symbolCode || 'USR'}`}
-                      >
-                        {getTerrainTypeImageUrl(t) ? (
-                          <img src={getTerrainTypeImageUrl(t) ?? ''} alt={t.name} width={20} height={20} loading="lazy" />
-                        ) : (
-                          t.symbolCode || 'USR'
-                        )}
-                      </span>
-                      {!t.isSystem && <button onClick={() => openEditTypeModal(t)}>Изм.</button>}
-                      {!t.isSystem && <button onClick={() => removeTerrainType(t.id)}>Уд.</button>}
+                {isAdmin && (
+                  <>
+                    <h3>Типы объектов</h3>
+                    <div className="side-group grouped-types">
+                      <button onClick={openCreateTypeModal}>+ Добавить тип</button>
+                      {terrainTypesGrouped.map((group) => (
+                        <div key={group.terrainClass} className="type-class-group">
+                          <div className="type-class-title">{CLASS_LABELS_RU[group.terrainClass]}</div>
+                          <div className="type-class-icons">
+                            {group.items.map((t) => (
+                              <div key={t.id} className="type-icon-item">
+                                <button
+                                  type="button"
+                                  className="icon-chip"
+                                  title={`${t.name} (${t.terrainClassNameRu}) • код ${t.symbolCode || 'USR'}`}
+                                  onClick={() => (!t.isSystem ? openEditTypeModal(t) : undefined)}
+                                >
+                                  {getTerrainTypeImageUrl(t) ? (
+                                    <img src={getTerrainTypeImageUrl(t) ?? ''} alt={t.name} width={20} height={20} loading="lazy" />
+                                  ) : (
+                                    <span>{t.symbolCode || 'USR'}</span>
+                                  )}
+                                </button>
+                                {!t.isSystem && <button onClick={() => removeTerrainType(t.id)}>Уд.</button>}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </>
+                )}
               </aside>
             )}
 
@@ -1124,7 +1302,7 @@ export function MapsPage() {
         </section>
       )}
 
-      {typeModalOpen && (
+      {isAdmin && typeModalOpen && (
         <div className="modal-backdrop" onClick={closeTypeModal}>
           <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
             <h3>{editingTypeId ? 'Редактирование типа' : 'Новый тип'}</h3>

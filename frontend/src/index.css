@@ -122,6 +122,22 @@ button {
   background: transparent;
 }
 
+.upload-with-loader,
+.digitize-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline-loader {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid #3b4b61;
+  border-top-color: #ff6b35;
+  animation: spin 0.8s linear infinite;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -244,6 +260,19 @@ td {
   gap: 8px;
 }
 
+.selected-type-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.selected-type-preview img {
+  border: 1px solid #2a3444;
+  border-radius: 6px;
+  background: #10161f;
+  object-fit: contain;
+}
+
 .types-list {
   margin: 0;
   padding: 0;
@@ -289,6 +318,43 @@ td {
   box-shadow: 0 0 0 1px #ff6b35 inset;
 }
 
+.grouped-types {
+  gap: 10px;
+}
+
+.type-class-group {
+  border: 1px solid #2a3444;
+  border-radius: 8px;
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.type-class-title {
+  font-size: 12px;
+  color: #9fb0c5;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.type-class-icons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.type-icon-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.type-icon-item button:last-child {
+  padding: 4px 6px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
 .types-actions {
   display: inline-flex;
   gap: 5px;
@@ -321,6 +387,12 @@ td {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-width: 1100px) {

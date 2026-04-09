@@ -6,6 +6,37 @@ export function getAccessToken(): string | null {
   return localStorage.getItem(ACCESS_TOKEN_KEY);
 }
 
+type JwtPayload = {
+  role?: string;
+  ['http://schemas.microsoft.com/ws/2008/06/identity/claims/role']?: string;
+};
+
+function decodeBase64Url(input: string): string {
+  const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
+  const padLength = normalized.length % 4 === 0 ? 0 : 4 - (normalized.length % 4);
+  return atob(`${normalized}${'='.repeat(padLength)}`);
+}
+
+export function getCurrentUserRole(): string | null {
+  const token = getAccessToken();
+  if (!token) {
+    return null;
+  }
+
+  const parts = token.split('.');
+  if (parts.length < 2) {
+    return null;
+  }
+
+  try {
+    const payloadJson = decodeBase64Url(parts[1]);
+    const payload = JSON.parse(payloadJson) as JwtPayload;
+    return payload.role ?? payload['http://schemas.microsoft.com/ws/2008/06/identity/claims/role'] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // Читает refresh token из localStorage.
 export function getRefreshToken(): string | null {
   return localStorage.getItem(REFRESH_TOKEN_KEY);
